@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dcc-mcp-substance3d-painter"
+version = "0.0.0"
+description = "Substance 3D Painter adapter for the DCC Model Context Protocol ecosystem"
+authors = [{ name = "Long Hao", email = "hal.long@outlook.com" }]
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+keywords = ["substance-3d-painter", "substance", "mcp", "dcc", "ai", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+]
+dependencies = ["dcc-mcp-core>=0.19.3,<1.0.0"]
+
+[project.optional-dependencies]
+dev = ["build", "pytest>=7.0", "ruff>=0.8.0", "twine", "pyyaml>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/dcc-mcp/dcc-mcp-substance3d-painter"
+Repository = "https://github.com/dcc-mcp/dcc-mcp-substance3d-painter"
+Issues = "https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/issues"
+Changelog = "https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/releases"
+
+[project.entry-points."dcc_mcp.adapters"]
+substance3d_painter = "dcc_mcp_substance3d_painter:SubstancePainterMcpServer"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dcc_mcp_substance3d_painter"]
+artifacts = ["src/dcc_mcp_substance3d_painter/skills/**", "src/dcc_mcp_substance3d_painter/painter/**"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/dcc_mcp_substance3d_painter", "tests", "tools", "README.md", "CHANGELOG.md", "LICENSE", "release-please-config.json", ".release-please-manifest.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "B", "C4"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["dcc_mcp_substance3d_painter"]
