@@ -20,7 +20,10 @@ class PainterQtDispatcher(HostUiDispatcherBase):
         """Attach a small repeating Qt timer from Painter's main thread."""
         if self._timer is not None:
             return
-        from PySide2.QtCore import QTimer  # Lazy import: provided by Painter.
+        try:
+            from PySide6.QtCore import QTimer  # Lazy import: provided by current Painter.
+        except ImportError:
+            from PySide2.QtCore import QTimer  # Older Painter releases.
 
         self._timer = QTimer()
         self._timer.setInterval(self._interval_ms)
