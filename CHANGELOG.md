@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.0...v0.1.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* support pyside6 in painter ([#2](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/issues/2)) ([dc27ef4](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/dc27ef4dac2fa79a93f00d39a1b8ba45cb88765f))
+
 ## 0.1.0 (2026-07-13)
 
 
