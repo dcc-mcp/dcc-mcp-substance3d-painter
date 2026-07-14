@@ -16,7 +16,10 @@ python -m pip install dcc-mcp-substance3d-painter
 
 Point `SUBSTANCE_PAINTER_PLUGINS_PATH` at the installed package's
 `dcc_mcp_substance3d_painter/painter` folder. Painter discovers the packaged
-`plugins/dcc_mcp_substance3d_painter.py`; enable it from the Python menu.
+`plugins/dcc_mcp_substance3d_painter_plugin.py` entry point. For unattended
+launches, set
+`SUBSTANCE_PAINTER_STARTUP_PLUGINS=dcc_mcp_substance3d_painter_plugin` so
+Painter starts the adapter without an interactive Python-menu action.
 
 Set `DCC_MCP_SUBSTANCE3D_PAINTER_PORT` before launching Painter to choose a
 different port. Standard `DCC_MCP_GATEWAY_PORT` and `DCC_MCP_REGISTRY_DIR`

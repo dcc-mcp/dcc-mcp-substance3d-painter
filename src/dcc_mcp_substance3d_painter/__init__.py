@@ -10,6 +10,8 @@ from dcc_mcp_substance3d_painter.server import (
     stop_server,
 )
 
+STARTUP_PLUGIN_MODULE = "dcc_mcp_substance3d_painter_plugin"
+
 __all__ = [
     "__version__",
     "DEFAULT_PORT",
@@ -18,4 +20,5 @@ __all__ = [
     "get_server",
     "start_server",
     "stop_server",
+    "STARTUP_PLUGIN_MODULE",
 ]
