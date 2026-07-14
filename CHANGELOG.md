@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.1...v0.1.2) (2026-07-14)
+
+
+### Bug Fixes
+
+* document Painter material workflow ([d37f5b8](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/d37f5b8ac88265c6feac3dbe7c4244daa3a9e232))
+
 ## [0.1.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.0...v0.1.1) (2026-07-13)
 
 
