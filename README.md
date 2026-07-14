@@ -27,9 +27,15 @@ settings are also honoured.
 
 ## Bundled skills
 
-`painter-project` inspects the current project and texture sets. Its typed
-export tool exports texture sets using a caller-provided Painter export preset
-URL, avoiding raw JavaScript or arbitrary script execution.
+`painter-project` provides typed tools for a complete material-authoring pass:
+
+- inspect the project and texture sets;
+- create PBR fill layers;
+- search Painter resources and apply smart materials;
+- list export presets, save the `.spp`, and export textures.
+
+The tools use Painter resource and preset URLs supplied by Painter itself. They
+do not expose raw JavaScript or arbitrary script execution.
 
 ## Development
 
