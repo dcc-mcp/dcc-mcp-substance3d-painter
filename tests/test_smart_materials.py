@@ -7,12 +7,7 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
 SCRIPTS = (
-    Path(__file__).parent.parent
-    / "src"
-    / "dcc_mcp_substance3d_painter"
-    / "skills"
-    / "painter-project"
-    / "scripts"
+    Path(__file__).parent.parent / "src" / "dcc_mcp_substance3d_painter" / "skills" / "painter-project" / "scripts"
 )
 
 

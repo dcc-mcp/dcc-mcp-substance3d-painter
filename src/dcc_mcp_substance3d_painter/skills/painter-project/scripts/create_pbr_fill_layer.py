@@ -32,8 +32,7 @@ def main(
 
     try:
         red, green, blue = (
-            _unit_interval(component, f"base_color[{index}]")
-            for index, component in enumerate(base_color)
+            _unit_interval(component, f"base_color[{index}]") for index, component in enumerate(base_color)
         )
         metallic_value = _unit_interval(metallic, "metallic")
         roughness_value = _unit_interval(roughness, "roughness")
