@@ -62,3 +62,158 @@ tools:
       on-failure:
         - painter_project__inspect_project
         - painter_project__list_texture_sets
+        - painter_project__list_export_presets
+  - name: list_export_presets
+    description: List predefined and resource-backed Painter export presets with stable URLs.
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          default: ""
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 200
+          default: 50
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: sync
+    affinity: main
+    timeout_hint_secs: 30
+    source_file: scripts/list_export_presets.py
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+    next-tools:
+      on-success:
+        - painter_project__export_textures
+  - name: save_project_as
+    description: Save the active Painter project to an explicit .spp path.
+    input_schema:
+      type: object
+      required: [project_path]
+      properties:
+        project_path:
+          type: string
+          minLength: 5
+    read_only: false
+    destructive: false
+    idempotent: true
+    execution: async
+    affinity: main
+    timeout_hint_secs: 300
+    source_file: scripts/save_project_as.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+    next-tools:
+      on-success:
+        - painter_project__export_textures
+      on-failure:
+        - painter_project__inspect_project
+  - name: create_pbr_fill_layer
+    description: Create a named fill layer with uniform Base Color, Metallic, and Roughness values.
+    input_schema:
+      type: object
+      required: [name, base_color]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        base_color:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: number
+            minimum: 0
+            maximum: 1
+        metallic:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0
+        roughness:
+          type: number
+          minimum: 0
+          maximum: 1
+          default: 0.5
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: sync
+    affinity: main
+    timeout_hint_secs: 30
+    source_file: scripts/create_pbr_fill_layer.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+    next-tools:
+      on-success:
+        - painter_project__export_textures
+      on-failure:
+        - painter_project__inspect_project
+  - name: search_resources
+    description: Search Painter shelf, project, and session resources with an optional usage filter.
+    input_schema:
+      type: object
+      properties:
+        query:
+          type: string
+          default: ""
+        usage:
+          type: string
+          description: Optional Painter Usage enum name, such as SMART_MATERIAL or EXPORT.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: sync
+    affinity: main
+    timeout_hint_secs: 30
+    source_file: scripts/search_resources.py
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+    next-tools:
+      on-success:
+        - painter_project__apply_smart_material
+        - painter_project__export_textures
+  - name: apply_smart_material
+    description: Insert an existing Painter smart material resource into the active texture-set stack.
+    input_schema:
+      type: object
+      required: [resource_url]
+      properties:
+        resource_url:
+          type: string
+          minLength: 1
+        layer_name:
+          type: string
+          minLength: 1
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: sync
+    affinity: main
+    timeout_hint_secs: 60
+    source_file: scripts/apply_smart_material.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+    next-tools:
+      on-success:
+        - painter_project__export_textures
+      on-failure:
+        - painter_project__search_resources
