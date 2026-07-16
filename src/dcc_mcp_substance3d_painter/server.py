@@ -11,7 +11,7 @@ from dcc_mcp_core.server_base import DccServerBase
 
 from dcc_mcp_substance3d_painter.__version__ import __version__
 
-DEFAULT_PORT = 8765
+DEFAULT_PORT = 0
 SERVER_NAME = "dcc-mcp-substance3d-painter"
 _SKILLS_DIR = Path(__file__).resolve().parent / "skills"
 _server: Optional["SubstancePainterMcpServer"] = None
@@ -47,10 +47,8 @@ def start_server(host_dispatcher: object, port: Optional[int] = None) -> Substan
     global _server
     if _server is not None and _server.is_running:
         return _server
-    _server = SubstancePainterMcpServer(
-        host_dispatcher,
-        port or int(os.environ.get("DCC_MCP_SUBSTANCE3D_PAINTER_PORT", DEFAULT_PORT)),
-    )
+    resolved_port = int(os.environ.get("DCC_MCP_SUBSTANCE3D_PAINTER_PORT", DEFAULT_PORT)) if port is None else port
+    _server = SubstancePainterMcpServer(host_dispatcher, resolved_port)
     _server.register_builtin_actions()
     _server.start()
     return _server
