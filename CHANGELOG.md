@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.2...v0.1.3) (2026-07-16)
+
+
+### Bug Fixes
+
+* auto-start Painter adapter on a free port ([#7](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/issues/7)) ([b16f92c](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/b16f92c1d8ab0be2173ad625212d5f1e73ca9c12))
+
 ## [0.1.2](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.1...v0.1.2) (2026-07-14)
 
 
