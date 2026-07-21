@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dcc-mcp-substance3d-painter"
-version = "0.1.3"
+version = "0.1.4"
 description = "Substance 3D Painter adapter for the DCC Model Context Protocol ecosystem"
 authors = [{ name = "Long Hao", email = "hal.long@outlook.com" }]
 readme = "README.md"
