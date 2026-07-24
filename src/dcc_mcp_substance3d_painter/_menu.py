@@ -58,11 +58,13 @@ def _get_pyside_module():
     """Return the available PySide QtWidgets module (PySide2 or PySide6)."""
     try:
         from PySide2 import QtWidgets
+
         return QtWidgets
     except ImportError:
         pass
     try:
         from PySide6 import QtWidgets
+
         return QtWidgets
     except ImportError:
         return None
