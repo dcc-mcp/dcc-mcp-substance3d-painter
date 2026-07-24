@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.3...v0.2.0) (2026-07-24)
+
+
+### Features
+
+* add unified DCC MCP menu with Copy Instance ID ([9425946](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/9425946a6db48d92215b4ebf1229d13816e32d08))
+
+
+### Documentation
+
+* align agent workflow and branding ([71cee68](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/71cee68077b2ec4e49825ed3c2d68419129fce46))
+* document CLI install and updates ([72426f9](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/72426f92b391a0e7cab63a327cae63d0b0f7f35c))
+
 ## [0.1.3](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.2...v0.1.3) (2026-07-16)
 
 
