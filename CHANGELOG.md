@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.3.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.2.0...v0.3.0) (2026-07-29)
+
+
+### Features
+
+* add safe Painter project switching ([4ca3e23](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/4ca3e233f5fb3355f38b6d6e88f8a055cadbc8b0))
+* add textured PBR lookdev workflow ([7301a03](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/7301a0312c24d6b2d853b08eba4b665a0569be17))
+
 ## [0.2.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.1.3...v0.2.0) (2026-07-24)
 
 
