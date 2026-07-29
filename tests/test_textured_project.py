@@ -47,6 +47,29 @@ def test_create_project_uses_explicit_painter_settings(tmp_path, monkeypatch):
     project.create.assert_called_once_with(str(mesh.resolve()), settings="settings")
 
 
+def test_open_and_close_project_preserve_unsaved_work(tmp_path, monkeypatch):
+    path = tmp_path / "weapon.spp"
+    path.write_bytes(b"spp")
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(side_effect=[False, True, True, True, False])
+    project.needs_saving = MagicMock(side_effect=[True, False])
+    project.open = MagicMock()
+    project.close = MagicMock()
+    monkeypatch.setitem(sys.modules, "substance_painter", ModuleType("substance_painter"))
+    monkeypatch.setitem(sys.modules, "substance_painter.project", project)
+
+    opened = _load("open_project").main(project_path=str(path))
+    refused = _load("close_project").main()
+    closed = _load("close_project").main()
+
+    assert opened["success"] is True
+    project.open.assert_called_once_with(str(path.resolve()))
+    assert refused["success"] is False
+    assert "Save the project" in refused["error"]
+    assert closed["success"] is True
+    project.close.assert_called_once_with()
+
+
 def test_textured_layer_maps_imported_resources_to_pbr_channels(tmp_path, monkeypatch):
     paths = {}
     for name in ("base", "normal", "roughness", "metallic", "ao"):
