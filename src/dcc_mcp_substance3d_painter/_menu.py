@@ -70,6 +70,18 @@ def _get_pyside_module():
         return None
 
 
+def _get_qaction_class(QtWidgets):
+    action_class = getattr(QtWidgets, "QAction", None)
+    if action_class is not None:
+        return action_class
+    try:
+        from PySide6 import QtGui
+
+        return QtGui.QAction
+    except (ImportError, AttributeError):
+        return None
+
+
 # ---------------------------------------------------------------------------
 # Menu action callbacks
 # ---------------------------------------------------------------------------
@@ -176,6 +188,10 @@ def add_menu() -> None:
     if QtWidgets is None:
         logger.debug("PySide2/6 not available — menu skipped")
         return
+    QAction = _get_qaction_class(QtWidgets)
+    if QAction is None:
+        logger.debug("PySide QAction not available — menu skipped")
+        return
 
     main_window = sp_ui.get_main_window()
     if main_window is None:
@@ -194,19 +210,19 @@ def add_menu() -> None:
     menu = QtWidgets.QMenu(_MENU_NAME, main_window)
 
     # Copy Instance ID
-    copy_action = QtWidgets.QAction("Copy Instance ID", menu)
+    copy_action = QAction("Copy Instance ID", menu)
     copy_action.triggered.connect(_copy_instance_id)
     menu.addAction(copy_action)
 
     # Server Info
-    server_info_action = QtWidgets.QAction("Server Info", menu)
+    server_info_action = QAction("Server Info", menu)
     server_info_action.triggered.connect(_show_server_info)
     menu.addAction(server_info_action)
 
     menu.addSeparator()
 
     # About DCC MCP
-    about_action = QtWidgets.QAction("About DCC MCP", menu)
+    about_action = QAction("About DCC MCP", menu)
     about_action.triggered.connect(_show_about)
     menu.addAction(about_action)
 
