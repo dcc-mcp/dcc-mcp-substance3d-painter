@@ -15,9 +15,7 @@ def _ocio_environment():
     return {
         "path": raw_path or None,
         "exists": bool(path and path.is_file()),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()
-        if path and path.is_file()
-        else None,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest() if path and path.is_file() else None,
     }
 
 
