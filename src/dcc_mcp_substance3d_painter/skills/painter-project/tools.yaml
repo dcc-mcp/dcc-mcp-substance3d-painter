@@ -1,6 +1,6 @@
 tools:
   - name: inspect_project
-    description: Inspect the current Substance 3D Painter project without modifying it.
+    description: Inspect the current Substance 3D Painter project and effective color-management state without modifying it.
     input_schema:
       type: object
       properties: {}
