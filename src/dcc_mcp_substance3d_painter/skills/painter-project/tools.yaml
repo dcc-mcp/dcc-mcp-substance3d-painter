@@ -7,7 +7,7 @@ tools:
     read_only: true
     destructive: false
     idempotent: true
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 15
     source_file: scripts/inspect_project.py
@@ -23,7 +23,7 @@ tools:
     read_only: true
     destructive: false
     idempotent: true
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 15
     source_file: scripts/inspect_camera.py
@@ -70,7 +70,7 @@ tools:
     read_only: false
     destructive: false
     idempotent: false
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 30
     source_file: scripts/start_camera_orbit.py
@@ -176,7 +176,7 @@ tools:
     read_only: true
     destructive: false
     idempotent: true
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 15
     source_file: scripts/list_texture_sets.py
@@ -232,7 +232,7 @@ tools:
     read_only: true
     destructive: false
     idempotent: true
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 30
     source_file: scripts/list_export_presets.py
@@ -298,7 +298,7 @@ tools:
     read_only: false
     destructive: false
     idempotent: false
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 30
     source_file: scripts/create_pbr_fill_layer.py
@@ -334,7 +334,7 @@ tools:
     read_only: false
     destructive: false
     idempotent: false
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 120
     source_file: scripts/create_textured_pbr_layer.py
@@ -367,7 +367,7 @@ tools:
     read_only: true
     destructive: false
     idempotent: true
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 30
     source_file: scripts/search_resources.py
@@ -394,7 +394,7 @@ tools:
     read_only: false
     destructive: false
     idempotent: false
-    execution: sync
+    execution: async
     affinity: main
     timeout_hint_secs: 60
     source_file: scripts/apply_smart_material.py
