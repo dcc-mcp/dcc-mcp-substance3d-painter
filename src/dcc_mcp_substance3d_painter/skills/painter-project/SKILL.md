@@ -21,6 +21,10 @@ metadata:
 
 # Painter Project
 
+Every tool in this skill runs through Painter's main-thread bridge and returns
+a core job envelope. Use `--wait` when calling through `dcc-mcp-cli`, or poll
+`jobs_get_status` with the returned `job_id` until the job is terminal.
+
 Create or inspect a project, add typed uniform or texture-driven PBR fill
 layers, inspect or orbit the viewport camera, apply smart materials, save to an explicit `.spp`
 path, and review texture sets before exporting. Exports require an explicit
