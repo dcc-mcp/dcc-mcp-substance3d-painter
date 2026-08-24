@@ -23,7 +23,10 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Multimedia :: Graphics :: 3D Modeling",
 ]
-dependencies = ["dcc-mcp-core>=0.19.3,<1.0.0"]
+dependencies = ["dcc-mcp-core>=0.20.8,<1.0.0"]
+
+[project.scripts]
+dcc-mcp-substance3d-painter = "dcc_mcp_substance3d_painter.install_cli:main"
 
 [project.optional-dependencies]
 dev = ["build", "pytest>=7.0", "ruff>=0.8.0", "twine", "pyyaml>=6.0"]
@@ -42,7 +45,7 @@ packages = ["src/dcc_mcp_substance3d_painter"]
 artifacts = ["src/dcc_mcp_substance3d_painter/skills/**", "src/dcc_mcp_substance3d_painter/painter/**"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/dcc_mcp_substance3d_painter", "tests", "tools", "README.md", "CHANGELOG.md", "LICENSE", "release-please-config.json", ".release-please-manifest.json"]
+include = ["src/dcc_mcp_substance3d_painter", "tests", "tools", "README.md", "install.md", "CHANGELOG.md", "LICENSE", "release-please-config.json", ".release-please-manifest.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
