@@ -24,7 +24,16 @@ def main(project_path: str, **_kwargs):
     except (RuntimeError, TypeError, ValueError) as exc:
         return skill_error("Unable to open Painter project", str(exc))
 
-    return skill_success("Opened Painter project", project_path=str(path), opened=project.is_open())
+    opened = bool(project.is_open())
+    observed_path = project.file_path() if opened else None
+    readback_path = Path(observed_path).expanduser().resolve() if observed_path else None
+    if not opened or readback_path != path:
+        return skill_error(
+            "Painter project open was not confirmed by host readback",
+            f"expected {path}; observed {readback_path if readback_path is not None else 'no open project'}",
+        )
+
+    return skill_success("Opened Painter project", project_path=str(readback_path), opened=True)
 
 
 if __name__ == "__main__":

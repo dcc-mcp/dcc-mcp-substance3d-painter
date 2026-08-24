@@ -18,7 +18,13 @@ def main(**_kwargs):
     except (RuntimeError, TypeError, ValueError) as exc:
         return skill_error("Unable to close Painter project", str(exc))
 
-    return skill_success("Closed Painter project", closed=not project.is_open())
+    if project.is_open():
+        return skill_error(
+            "Painter project close was not confirmed by host readback",
+            "project.is_open() remained True after project.close()",
+        )
+
+    return skill_success("Closed Painter project", closed=True)
 
 
 if __name__ == "__main__":

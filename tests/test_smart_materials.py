@@ -110,6 +110,8 @@ def test_list_export_presets_uses_dedicated_export_api(monkeypatch):
 def test_save_project_as_uses_explicit_spp_path(monkeypatch, tmp_path):
     project = ModuleType("substance_painter.project")
     project.is_open = MagicMock(return_value=True)
+    project.file_path = MagicMock(side_effect=lambda: str(output))
+    project.needs_saving = MagicMock(return_value=False)
     project.save_as = MagicMock(side_effect=lambda path: Path(path).write_bytes(b"spp"))
     painter = ModuleType("substance_painter")
     painter.project = project
@@ -122,3 +124,21 @@ def test_save_project_as_uses_explicit_spp_path(monkeypatch, tmp_path):
     assert result["success"] is True
     project.save_as.assert_called_once_with(str(output.resolve()))
     assert result["context"]["size_bytes"] == 3
+
+
+def test_save_project_as_fails_closed_when_host_readback_remains_dirty(monkeypatch, tmp_path):
+    output = tmp_path / "signal_forge.spp"
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    project.file_path = MagicMock(return_value=str(output))
+    project.needs_saving = MagicMock(return_value=True)
+    project.save_as = MagicMock(side_effect=lambda path: Path(path).write_bytes(b"spp"))
+    painter = ModuleType("substance_painter")
+    painter.project = project
+    monkeypatch.setitem(sys.modules, "substance_painter", painter)
+    monkeypatch.setitem(sys.modules, "substance_painter.project", project)
+
+    result = _load_script("save_project_as").main(project_path=str(output))
+
+    assert result["success"] is False
+    assert "readback" in result["message"].lower()
