@@ -29,6 +29,10 @@ def test_inspect_project_reports_ocio_environment(monkeypatch, tmp_path):
     project = ModuleType("substance_painter.project")
     project.is_open = lambda: True
     project.file_path = lambda: "P:/lookdev/drawcall557.spp"
+    project.name = lambda: "drawcall557"
+    project.needs_saving = lambda: False
+    project.is_busy = lambda: False
+    project.is_in_edition_state = lambda: True
     display = ModuleType("substance_painter.display")
     display.get_tone_mapping = lambda: (_ for _ in ()).throw(RuntimeError("color managed"))
     colormanagement = ModuleType("substance_painter.colormanagement")
@@ -38,6 +42,11 @@ def test_inspect_project_reports_ocio_environment(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "substance_painter.project", project)
     monkeypatch.setitem(sys.modules, "substance_painter.display", display)
     monkeypatch.setitem(sys.modules, "substance_painter.colormanagement", colormanagement)
+    textureset = ModuleType("substance_painter.textureset")
+    textureset.all_texture_sets = lambda: []
+    layerstack = ModuleType("substance_painter.layerstack")
+    monkeypatch.setitem(sys.modules, "substance_painter.textureset", textureset)
+    monkeypatch.setitem(sys.modules, "substance_painter.layerstack", layerstack)
     monkeypatch.setenv("OCIO", str(config))
 
     result = _load_script().main()

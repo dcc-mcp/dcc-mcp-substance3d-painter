@@ -27,7 +27,10 @@ def _load_script() -> ModuleType:
 def test_create_pbr_fill_layer_uses_public_painter_api(monkeypatch):
     layer = MagicMock()
     layer.uid.return_value = 17
+    layer.get_name.return_value = "SIGNAL FORGE | Oxidized Alloy"
+    layer.get_type.return_value = SimpleNamespace(name="FillLayer")
     stack = object()
+    layer.get_stack.return_value = stack
     channel_type = SimpleNamespace(BaseColor="base", Metallic="metal", Roughness="rough")
     color = MagicMock(side_effect=lambda r, g, b: (r, g, b))
 
@@ -40,6 +43,7 @@ def test_create_pbr_fill_layer_uses_public_painter_api(monkeypatch):
     layerstack = ModuleType("substance_painter.layerstack")
     layerstack.InsertPosition = SimpleNamespace(from_textureset_stack=MagicMock(return_value="top"))
     layerstack.insert_fill = MagicMock(return_value=layer)
+    layerstack.get_node_by_uid = MagicMock(return_value=[layer])
     colormanagement = ModuleType("substance_painter.colormanagement")
     colormanagement.Color = color
 

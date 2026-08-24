@@ -361,20 +361,153 @@ tools:
       on-failure:
         - painter_project__inspect_project
         - painter_project__list_texture_sets
-  - name: export_textures
-    description: Export all current Painter texture sets using an explicit Painter export preset URL.
+  - name: create_export_preset
+    description: Build a bounded inline PNG export preset with explicit document-map channel routing.
     input_schema:
       type: object
-      required: [export_path, preset_url]
+      additionalProperties: false
+      required: [name, maps]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: "^[A-Za-z][A-Za-z0-9_-]*$"
+        maps:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            type: object
+            additionalProperties: false
+            required: [file_name, channels]
+            properties:
+              file_name:
+                type: string
+                minLength: 1
+                maxLength: 128
+              channels:
+                type: array
+                minItems: 1
+                maxItems: 4
+                items:
+                  type: object
+                  additionalProperties: false
+                  required: [destination, source_channel, source_map]
+                  properties:
+                    destination:
+                      type: string
+                      enum: [R, G, B, A, RGB, RGB+A]
+                    source_channel:
+                      type: string
+                      enum: [R, G, B, A, RGB, RGB+A]
+                    source_map:
+                      type: string
+                      minLength: 1
+                      maxLength: 64
+        bit_depth:
+          type: integer
+          enum: [8, 16]
+          default: 8
+        dithering:
+          type: boolean
+          default: false
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: async
+    affinity: main
+    timeout_hint_secs: 15
+    source_file: scripts/create_export_preset.py
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    next-tools:
+      on-success:
+        - painter_project__export_textures
+  - name: export_textures
+    description: Selectively export Painter texture sets and verify returned files, with strict PNG resolution readback for inline presets.
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [export_path]
+      oneOf:
+        - required: [preset_url]
+        - required: [preset]
       properties:
         export_path:
           type: string
           description: Existing or creatable output directory for exported texture files.
         preset_url:
           type: string
+          minLength: 1
           description: Painter export preset URL, for example a resource URL returned by Painter.
+        preset:
+          type: object
+          additionalProperties: false
+          required: [name, maps]
+          description: Exact bounded object returned by painter_project__create_export_preset.
+          properties:
+            name:
+              type: string
+            maps:
+              type: array
+              minItems: 1
+              maxItems: 32
+              items:
+                type: object
+                additionalProperties: false
+                required: [fileName, channels, parameters]
+                properties:
+                  fileName:
+                    type: string
+                  channels:
+                    type: array
+                    minItems: 1
+                    maxItems: 4
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required: [destChannel, srcChannel, srcMapType, srcMapName]
+                      properties:
+                        destChannel:
+                          type: string
+                          enum: [R, G, B, A, RGB, RGB+A]
+                        srcChannel:
+                          type: string
+                          enum: [R, G, B, A, RGB, RGB+A]
+                        srcMapType:
+                          type: string
+                          const: documentMap
+                        srcMapName:
+                          type: string
+                  parameters:
+                    type: object
+                    additionalProperties: false
+                    required: [fileFormat, bitDepth, dithering]
+                    properties:
+                      fileFormat:
+                        type: string
+                        const: png
+                      bitDepth:
+                        type: string
+                        enum: ["8", "16"]
+                      dithering:
+                        type: boolean
+        texture_sets:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+            maxLength: 256
         padding_algorithm:
           type: string
+          enum: [infinite, dilation, passthrough]
           default: infinite
           description: Painter padding algorithm forwarded to the export parameters.
     read_only: false
@@ -494,10 +627,202 @@ tools:
         - painter_project__export_textures
       on-failure:
         - painter_project__inspect_project
+  - name: list_layer_stack
+    description: Read one Painter layer stack as a full tree of layers, masks, and effects for before/after assertions.
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        texture_set:
+          type: string
+          minLength: 1
+          maxLength: 256
+        stack:
+          type: string
+          maxLength: 256
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: async
+    affinity: main
+    timeout_hint_secs: 30
+    source_file: scripts/list_layer_stack.py
+    annotations:
+      read_only_hint: true
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+  - name: insert_paint_layer
+    description: Insert a named Painter paint layer at a bounded position and require same-stack host readback.
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        placement:
+          type: string
+          enum: [top, above, below, inside]
+          default: top
+        relative_to_uid:
+          type: integer
+          minimum: 0
+        texture_set:
+          type: string
+          minLength: 1
+          maxLength: 256
+        stack:
+          type: string
+          maxLength: 256
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: async
+    affinity: main
+    timeout_hint_secs: 30
+    source_file: scripts/insert_paint_layer.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    next-tools:
+      on-success:
+        - painter_project__list_layer_stack
+      on-failure:
+        - painter_project__list_layer_stack
+  - name: add_mask
+    description: Add a black, white, or resource-backed smart mask to exactly one Painter layer and verify it by readback.
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [layer_uid, kind]
+      properties:
+        layer_uid:
+          type: integer
+          minimum: 0
+        kind:
+          type: string
+          enum: [black, white, smart]
+        resource_url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        texture_set:
+          type: string
+          minLength: 1
+          maxLength: 256
+        stack:
+          type: string
+          maxLength: 256
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: async
+    affinity: main
+    timeout_hint_secs: 60
+    source_file: scripts/add_mask.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    next-tools:
+      on-success:
+        - painter_project__list_layer_stack
+      on-failure:
+        - painter_project__list_layer_stack
+        - painter_project__search_resources
+  - name: add_generator_effect
+    description: Insert an existing generator resource into a layer content or mask effect stack and verify its source by readback.
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [target_uid, target_stack, resource_url]
+      properties:
+        target_uid:
+          type: integer
+          minimum: 0
+        target_stack:
+          type: string
+          enum: [content, mask]
+        resource_url:
+          type: string
+          minLength: 1
+          maxLength: 2048
+        texture_set:
+          type: string
+          minLength: 1
+          maxLength: 256
+        stack:
+          type: string
+          maxLength: 256
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: async
+    affinity: main
+    timeout_hint_secs: 60
+    source_file: scripts/add_generator_effect.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    next-tools:
+      on-success:
+        - painter_project__list_layer_stack
+      on-failure:
+        - painter_project__list_layer_stack
+        - painter_project__search_resources
+  - name: import_resource
+    description: Import one bounded resource file into the open Painter project and require catalog readback before success.
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [file_path, usage]
+      properties:
+        file_path:
+          type: string
+          minLength: 1
+        usage:
+          type: string
+          enum: [alpha, environment, export, generator, smart_mask, smart_material, texture]
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        group:
+          type: string
+          minLength: 1
+          maxLength: 128
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: async
+    affinity: main
+    timeout_hint_secs: 120
+    source_file: scripts/import_resource.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+    next-tools:
+      on-success:
+        - painter_project__search_resources
+        - painter_project__add_mask
+        - painter_project__add_generator_effect
+      on-failure:
+        - painter_project__search_resources
   - name: create_pbr_fill_layer
     description: Create a named fill layer with uniform Base Color, Metallic, and Roughness values.
     input_schema:
       type: object
+      additionalProperties: false
       required: [name, base_color]
       properties:
         name:

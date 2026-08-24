@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dcc_mcp_core.skill import skill_entry, skill_error, skill_success
 
+from dcc_mcp_substance3d_painter.painter_state import find_node, node_summary
+
 
 def _unit_interval(value: float, label: str) -> float:
     resolved = float(value)
@@ -59,6 +61,10 @@ def main(
         colormanagement.Color(roughness_value, roughness_value, roughness_value),
     )
 
+    readback = find_node(layerstack, int(layer.uid()), stack)
+    if readback is None or str(readback.get_name()) != str(name):
+        return skill_error("Painter PBR fill layer readback failed", "HOST_READBACK_MISMATCH")
+
     return skill_success(
         "Created Painter PBR fill layer",
         layer_name=str(name),
@@ -66,6 +72,7 @@ def main(
         base_color=[red, green, blue],
         metallic=metallic_value,
         roughness=roughness_value,
+        node=node_summary(readback),
     )
 
 
