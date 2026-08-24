@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import yaml
+from dcc_mcp_core.cancellation import CancelToken, reset_cancel_token, set_cancel_token
 
 from dcc_mcp_substance3d_painter.dispatcher import PainterQtDispatcher
 from dcc_mcp_substance3d_painter.server import SubstancePainterMcpServer
@@ -259,3 +260,156 @@ def test_bake_mesh_maps_is_a_pollable_core_job_that_preserves_the_host(monkeypat
         exercise()
     finally:
         server.stop()
+
+
+def test_bake_mesh_maps_forwards_core_cancellation_to_native_stop_source(monkeypatch):
+    texture_set = MagicMock()
+    texture_set.name.return_value = "Body"
+    parameters = MagicMock()
+    stop_source = MagicMock()
+    stop_source.request_stop.return_value = True
+
+    class BakingProcessAboutToStart:
+        pass
+
+    class BakingProcessProgress:
+        pass
+
+    class BakingProcessEnded:
+        pass
+
+    class EventDispatcher:
+        def __init__(self):
+            self._callbacks = {}
+
+        def connect(self, event_type, callback):
+            self._callbacks.setdefault(event_type, []).append(callback)
+
+        def disconnect(self, event_type, callback):
+            self._callbacks[event_type].remove(callback)
+
+        def emit(self, event_type, payload):
+            for callback in tuple(self._callbacks.get(event_type, ())):
+                callback(payload)
+
+    event_dispatcher = EventDispatcher()
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    textureset = ModuleType("substance_painter.textureset")
+    textureset.all_texture_sets = MagicMock(return_value=[texture_set])
+    textureset.MeshMapUsage = SimpleNamespace(Normal="normal")
+    baking = ModuleType("substance_painter.baking")
+    baking.BakingParameters = MagicMock()
+    baking.BakingParameters.from_texture_set.return_value = parameters
+    baking.bake_async = MagicMock(return_value=stop_source)
+    event = ModuleType("substance_painter.event")
+    event.BakingProcessAboutToStart = BakingProcessAboutToStart
+    event.BakingProcessProgress = BakingProcessProgress
+    event.BakingProcessEnded = BakingProcessEnded
+    event.DISPATCHER = event_dispatcher
+    painter = ModuleType("substance_painter")
+    for name, module in (
+        ("substance_painter", painter),
+        ("substance_painter.project", project),
+        ("substance_painter.textureset", textureset),
+        ("substance_painter.baking", baking),
+        ("substance_painter.event", event),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    script_path = SKILL / "scripts" / "bake_mesh_maps.py"
+    spec = __import__("importlib.util").util.spec_from_file_location("bake_mesh_maps_cancel", script_path)
+    assert spec and spec.loader
+    script = __import__("importlib.util").util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    deferred = script.main(texture_set="Body", maps=["normal"])
+    token = CancelToken(job_id="core-job")
+    token.cancel()
+    reset = set_cancel_token(token)
+    try:
+        assert deferred.check_is_finished() is None
+        stop_source.request_stop.assert_called_once_with()
+        event_dispatcher.emit(
+            BakingProcessEnded,
+            SimpleNamespace(status=SimpleNamespace(name="Cancelled"), message="cancelled by client"),
+        )
+        result = deferred.check_is_finished()
+    finally:
+        reset_cancel_token(reset)
+
+    assert result["success"] is False
+    assert result["context"]["native_status"] == "cancelled"
+    assert result["context"]["cancellation_supported"] is True
+
+
+def test_successful_bake_reads_back_resources_and_texture_set_resolution(monkeypatch):
+    normal_usage = object()
+    resource = MagicMock()
+    resource.url.return_value = "resource://project0/Body_Normal"
+    texture_set = MagicMock()
+    texture_set.name.return_value = "Body"
+    texture_set.get_mesh_map_resource.return_value = resource
+    texture_set.get_resolution.return_value = SimpleNamespace(width=2048, height=2048)
+
+    class BakingProcessAboutToStart:
+        pass
+
+    class BakingProcessProgress:
+        pass
+
+    class BakingProcessEnded:
+        pass
+
+    class EventDispatcher:
+        def __init__(self):
+            self._callbacks = {}
+
+        def connect(self, event_type, callback):
+            self._callbacks.setdefault(event_type, []).append(callback)
+
+        def disconnect(self, event_type, callback):
+            self._callbacks[event_type].remove(callback)
+
+        def emit(self, event_type, payload):
+            for callback in tuple(self._callbacks.get(event_type, ())):
+                callback(payload)
+
+    event_dispatcher = EventDispatcher()
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    textureset = ModuleType("substance_painter.textureset")
+    textureset.all_texture_sets = MagicMock(return_value=[texture_set])
+    textureset.MeshMapUsage = SimpleNamespace(Normal=normal_usage)
+    baking = ModuleType("substance_painter.baking")
+    baking.BakingParameters = MagicMock()
+    baking.BakingParameters.from_texture_set.return_value = MagicMock()
+    baking.bake_async = MagicMock(return_value=MagicMock())
+    event = ModuleType("substance_painter.event")
+    event.BakingProcessAboutToStart = BakingProcessAboutToStart
+    event.BakingProcessProgress = BakingProcessProgress
+    event.BakingProcessEnded = BakingProcessEnded
+    event.DISPATCHER = event_dispatcher
+    painter = ModuleType("substance_painter")
+    for name, module in (
+        ("substance_painter", painter),
+        ("substance_painter.project", project),
+        ("substance_painter.textureset", textureset),
+        ("substance_painter.baking", baking),
+        ("substance_painter.event", event),
+    ):
+        monkeypatch.setitem(sys.modules, name, module)
+
+    script_path = SKILL / "scripts" / "bake_mesh_maps.py"
+    spec = __import__("importlib.util").util.spec_from_file_location("bake_mesh_maps_verify", script_path)
+    assert spec and spec.loader
+    script = __import__("importlib.util").util.module_from_spec(spec)
+    spec.loader.exec_module(script)
+    deferred = script.main(texture_set="Body", maps=["normal"])
+    event_dispatcher.emit(BakingProcessEnded, SimpleNamespace(status=SimpleNamespace(name="Success"), message=""))
+
+    result = deferred.check_is_finished()
+
+    assert result["success"] is True
+    assert result["context"]["mesh_map_resources"] == {"normal": "resource://project0/Body_Normal"}
+    assert result["context"]["resolution"] == {"width": 2048, "height": 2048}
+    texture_set.get_mesh_map_resource.assert_called_once_with(normal_usage)

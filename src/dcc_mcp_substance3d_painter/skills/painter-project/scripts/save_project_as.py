@@ -23,11 +23,20 @@ def main(project_path: str, **_kwargs):
     except (RuntimeError, TypeError, ValueError) as exc:
         return skill_error("Unable to save Painter project", str(exc))
 
+    observed_path = project.file_path()
+    readback_path = Path(observed_path).expanduser().resolve() if observed_path else None
+    needs_saving = bool(project.needs_saving())
+    if readback_path != output or needs_saving or not output.is_file():
+        return skill_error(
+            "Painter project save-as was not confirmed by host readback",
+            f"expected {output}; observed {readback_path}, path_exists={output.is_file()}, needs_saving={needs_saving}",
+        )
     return skill_success(
         "Saved Painter project",
-        project_path=str(output),
-        exists=output.exists(),
-        size_bytes=output.stat().st_size if output.exists() else 0,
+        project_path=str(readback_path),
+        exists=True,
+        size_bytes=output.stat().st_size,
+        needs_saving=False,
     )
 
 

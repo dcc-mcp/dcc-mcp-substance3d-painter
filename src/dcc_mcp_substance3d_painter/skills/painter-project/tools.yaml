@@ -84,9 +84,10 @@ tools:
       on-failure:
         - painter_project__inspect_camera
   - name: create_project
-    description: Create a Painter project from a mesh with explicit resolution and normal-map format.
+    description: Create a Painter project from a mesh with explicit template, UV workflow, resolution, and normal-map format.
     input_schema:
       type: object
+      additionalProperties: false
       required: [mesh_path, project_path]
       properties:
         mesh_path:
@@ -103,6 +104,13 @@ tools:
           type: string
           enum: [DirectX, OpenGL]
           default: DirectX
+        template_path:
+          type: string
+          description: Optional existing Painter project template path.
+        uv_workflow:
+          type: string
+          enum: [default, texture-set-per-uv-tile, uv-tile]
+          default: default
     read_only: false
     destructive: false
     idempotent: false
@@ -114,6 +122,7 @@ tools:
       read_only_hint: false
       destructive_hint: false
       idempotent_hint: false
+      open_world_hint: false
     next-tools:
       on-success:
         - painter_project__inspect_project
@@ -168,6 +177,68 @@ tools:
       on-failure:
         - painter_project__save_project_as
         - painter_project__inspect_project
+  - name: reload_mesh
+    description: Reload an existing mesh into the open Painter project and verify the native callback plus mesh-path readback.
+    input_schema:
+      type: object
+      additionalProperties: false
+      required: [mesh_path]
+      properties:
+        mesh_path:
+          type: string
+          minLength: 1
+          description: Existing FBX, OBJ, DAE, PLY, or USD mesh path.
+        import_cameras:
+          type: boolean
+          default: true
+        preserve_strokes:
+          type: boolean
+          default: true
+    output_schema:
+      type: object
+      properties:
+        job_id:
+          type: string
+        status:
+          type: string
+          enum: [pending, running, completed, failed, cancelled, interrupted]
+        success:
+          type: boolean
+        message:
+          type: string
+        error:
+          type: string
+        context:
+          type: object
+          properties:
+            mesh_path:
+              type: string
+            native_status:
+              type: string
+            import_cameras:
+              type: boolean
+            preserve_strokes:
+              type: boolean
+    read_only: false
+    destructive: false
+    idempotent: false
+    execution: async
+    job_strategy: monolithic
+    affinity: main
+    timeout_hint_secs: 600
+    source_file: scripts/reload_mesh.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: false
+      open_world_hint: false
+      deferred_hint: true
+    next-tools:
+      on-success:
+        - painter_project__inspect_project
+        - painter_project__list_texture_sets
+      on-failure:
+        - painter_project__inspect_project
   - name: list_texture_sets
     description: List texture sets and their active stack names without modifying the project.
     input_schema:
@@ -187,8 +258,9 @@ tools:
   - name: bake_mesh_maps
     description: >-
       Bake selected mesh maps for exactly one Painter texture set as a core-managed job.
-      Returns immediately with a job ID; poll jobs_get_status for terminal status.
-      Painter owns the monolithic bake, so this tool does not claim mid-bake cancellation.
+      Returns immediately with a job ID; poll jobs_get_status for terminal status. Core
+      cancellation is forwarded to Painter's native bake stop source, and success requires
+      mesh-map resource plus texture-set resolution readback.
     input_schema:
       type: object
       required: [texture_set, maps]
@@ -251,6 +323,22 @@ tools:
               maximum: 1
             cancellation_supported:
               type: boolean
+            cancellation_requested:
+              type: boolean
+            mesh_map_resources:
+              type: object
+              additionalProperties:
+                type: string
+            resolution:
+              type: object
+              required: [width, height]
+              properties:
+                width:
+                  type: integer
+                  minimum: 1
+                height:
+                  type: integer
+                  minimum: 1
     read_only: false
     destructive: false
     idempotent: false
@@ -332,6 +420,55 @@ tools:
     next-tools:
       on-success:
         - painter_project__export_textures
+  - name: save_project
+    description: Save the active Painter project and confirm the host reports a clean saved state.
+    input_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        mode:
+          type: string
+          enum: [incremental, full]
+          default: incremental
+    output_schema:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
+        error:
+          type: string
+        context:
+          type: object
+          properties:
+            project_path:
+              type: string
+            needs_saving:
+              type: boolean
+            mode:
+              type: string
+              enum: [incremental, full]
+    read_only: false
+    destructive: false
+    idempotent: true
+    execution: async
+    affinity: main
+    timeout_hint_secs: 300
+    source_file: scripts/save_project.py
+    annotations:
+      read_only_hint: false
+      destructive_hint: false
+      idempotent_hint: true
+      open_world_hint: false
+    next-tools:
+      on-success:
+        - painter_project__inspect_project
+        - painter_project__export_textures
+      on-failure:
+        - painter_project__inspect_project
+        - painter_project__save_project_as
   - name: save_project_as
     description: Save the active Painter project to an explicit .spp path.
     input_schema:
