@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from dcc_mcp_core import DccServerOptions, HostExecutionBridge
 from dcc_mcp_core.server_base import DccServerBase
@@ -32,6 +32,21 @@ class SubstancePainterMcpServer(DccServerBase):
             enable_telemetry=True,
         )
         super().__init__(options=options)
+
+    def register_builtin_actions(
+        self,
+        extra_skill_paths: Optional[list[str]] = None,
+        include_bundled: bool = True,
+        minimal_mode: Optional[Any] = None,
+    ) -> None:
+        """Register Core actions and keep the install readiness probe loaded."""
+        super().register_builtin_actions(
+            extra_skill_paths=extra_skill_paths,
+            include_bundled=include_bundled,
+            minimal_mode=minimal_mode,
+        )
+        if not self.load_skill("painter-diagnostics"):
+            raise RuntimeError("Painter diagnostics skill could not be loaded")
 
     def _version_string(self) -> str:
         try:

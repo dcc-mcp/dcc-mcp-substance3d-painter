@@ -55,17 +55,10 @@ and advertises the endpoint through DCC-MCP discovery.
 
 ## Install and load
 
-Install into the Python environment Painter uses:
-
-```bash
-python -m pip install dcc-mcp-substance3d-painter
-```
-
-Point `SUBSTANCE_PAINTER_PLUGINS_PATH` at the installed package's
-`dcc_mcp_substance3d_painter/painter` folder and add the installation root to
-`PYTHONPATH`. Painter discovers the packaged
-`startup/dcc_mcp_substance3d_painter_plugin.py` entry point and starts the
-adapter automatically.
+Use the agent-first lifecycle for preflight, a non-mutating plan, receipted
+installation, live verification, upgrades, and uninstall. See
+[install.md](install.md) for exact Windows, macOS, and Linux commands and the
+manual environment path.
 
 Set `DCC_MCP_SUBSTANCE3D_PAINTER_PORT` before launching Painter only when a
 fixed port is required; `0` keeps automatic allocation. Standard

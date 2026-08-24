@@ -18,6 +18,8 @@ def test_release_metadata_is_synchronized():
 
 def test_plugin_and_skill_contract_files_exist():
     package = ROOT / "src" / "dcc_mcp_substance3d_painter"
+    for required_directory in ("plugins", "startup", "modules"):
+        assert package.joinpath("painter", required_directory).is_dir()
     startup_entry = package.joinpath("painter", "startup", f"{adapter.STARTUP_PLUGIN_MODULE}.py")
     assert startup_entry.exists()
     assert adapter.STARTUP_PLUGIN_MODULE != adapter.__name__
