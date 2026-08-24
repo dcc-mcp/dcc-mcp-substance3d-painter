@@ -3,7 +3,7 @@ name: painter-project
 description: >-
   Host skill - inspect and author the current Substance 3D Painter project.
   Use when creating or checking projects, building uniform or texture-driven
-  PBR layers, baking mesh maps, searching resources, applying smart materials, or exporting.
+  PBR layers, masks and generators, baking mesh maps, importing resources, or exporting.
   Not for arbitrary JavaScript execution.
 license: MIT
 compatibility: "Substance 3D Painter Python API; dcc-mcp-core 0.20.15+"
@@ -14,8 +14,8 @@ metadata:
     version: "0.0.0"
     layer: domain
     stage: pipeline
-    search-hint: "substance painter create project mesh pbr textured fill bake mesh maps smart material resource texture sets export preset"
-    tags: "substance, painter, textures, materials, layers, baking, mesh-maps, smart-material, resources, export, project"
+    search-hint: "substance painter create project mesh pbr paint fill layer stack mask generator bake maps import resource selective export preset"
+    tags: "substance, painter, textures, materials, layers, masks, generators, baking, mesh-maps, resources, export, project"
     tools: tools.yaml
 ---
 
@@ -32,10 +32,26 @@ confirms the resulting open, closed, clean, or imported-mesh state. Project
 creation accepts a bounded UV workflow, optional template, resolution, and
 normal-map format.
 
-Add typed uniform or texture-driven PBR fill layers, inspect or orbit the
-viewport camera, apply smart materials, and review texture sets before
-exporting. Exports require an explicit Painter preset URL to keep the
-operation typed and reviewable.
+Add typed uniform, texture-driven fill, or paint layers. Address a node by the
+UID returned from `list_layer_stack`; masks are limited to black, white, or a
+validated smart-mask resource, and generator effects require a validated
+generator resource. Every mutation is read back from the selected Painter
+stack before success. Import project resources with an explicit bounded
+usage, then pass their stable resource URL to a mask, generator, or smart
+material call in the same host session.
+
+Use `create_export_preset` to build a bounded inline PNG preset with explicit
+document-map channel routing. Pass that object to `export_textures` with one
+or more exact texture-set names. The export succeeds only when Painter returns
+`Success`, every returned file exists under the requested directory, and each
+PNG resolution matches the selected texture sets. Existing Painter preset
+URLs remain supported; their output files are checked for existence, but only
+the typed inline PNG path provides resolution verification.
+
+`inspect_project` includes dirty/busy/editable state, texture-set and UV-tile
+resolutions, channels, mesh-map resource URLs, and full layer trees so callers
+can make deterministic before/after assertions. This is host state, not a
+visual-quality judgement.
 
 Mesh-map baking accepts one exact texture-set name and a bounded baker list per
 call. It returns a core job ID immediately; poll `jobs_get_status` until the
