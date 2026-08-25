@@ -6,7 +6,7 @@ description: >-
   PBR layers, baking mesh maps, searching resources, applying smart materials, or exporting.
   Not for arbitrary JavaScript execution.
 license: MIT
-compatibility: "Substance 3D Painter Python API; dcc-mcp-core 0.19+"
+compatibility: "Substance 3D Painter Python API; dcc-mcp-core 0.20.15+"
 allowed-tools: Python
 metadata:
   dcc-mcp:

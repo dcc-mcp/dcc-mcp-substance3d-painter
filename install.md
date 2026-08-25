@@ -8,7 +8,7 @@ path and starts the embedded DCC-MCP server on Painter's main thread.
 
 - Substance 3D Painter 7.2 or newer.
 - Python 3.9 or newer for the wheel environment.
-- `dcc-mcp-core>=0.20.8,<1.0.0` in that same environment.
+- `dcc-mcp-core>=0.20.15,<1.0.0` in that same environment.
 - Write access to the current user's Painter resource profile.
 
 Install or update the wheel in the exact interpreter that the lifecycle
@@ -26,7 +26,8 @@ Windows, macOS, and Linux are supported. The lifecycle command checks the
 Painter 7.2 floor before changing the profile. It reads Windows executable
 metadata, a macOS app bundle's `Info.plist`, or a version embedded in the
 selected path. If installed metadata is unavailable, set
-`DCC_MCP_SUBSTANCE3D_PAINTER_VERSION` to the verified installed version.
+the exact Painter executable with `--dcc-path`; unverified version overrides are
+not accepted.
 
 Default user resource profile on all three platforms:
 
@@ -84,9 +85,12 @@ dcc-mcp-substance3d-painter verify --dcc-path "/absolute/path/to/Painter" --pyth
 ```
 
 Verification checks the receipt and SHA-256 digests, imports the adapter and
-Core in the recorded interpreter, checks bootstrap error logs, finds one live
-Painter runtime, and calls the read-only `painter_diagnostics__ping` tool
-through the existing main-thread bridge.
+Core from their recorded installed distributions, checks bootstrap error logs,
+finds one live Painter runtime, independently captures its PID, executable and
+start identity before and after the probe, and calls the read-only
+`painter_diagnostics__ping` tool through the existing main-thread bridge. The
+probe must report the exact receipted plugin/module origins before readiness is
+reported.
 
 ## Upgrade
 
@@ -118,10 +122,10 @@ preserved and reported instead of being deleted.
 ## Troubleshooting
 
 - **Host preflight (exit 10):** pass the exact executable or `.app` with
-  `--dcc-path`. When version metadata is unavailable, verify the installed
-  release and set `DCC_MCP_SUBSTANCE3D_PAINTER_VERSION`.
+  `--dcc-path`. The installer fails closed when trusted executable or bundle
+  version metadata is unavailable.
 - **Python/Core import (exit 10):** reinstall the wheel and
-  `dcc-mcp-core>=0.20.8` using the exact `--python` interpreter. Do not use
+  `dcc-mcp-core>=0.20.15` using the exact `--python` interpreter. Do not use
   credentials or a different shell's Python implicitly.
 - **Partial or repair state (exit 10):** keep the reported files in place and
   rerun `install --yes`; unreceipted files are never overwritten.
