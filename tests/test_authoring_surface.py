@@ -373,9 +373,10 @@ def test_smart_mask_cleanup_oserror_preserves_the_original_failure(monkeypatch) 
     assert "secret_cleanup_token" not in str(result).lower()
 
 
-def test_smart_mask_cleanup_leaves_base_exceptions_to_the_skill_boundary(monkeypatch) -> None:
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_smart_mask_cleanup_base_exceptions_preserve_the_original_failure(monkeypatch, failure_type) -> None:
     _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
-    target.remove_mask.side_effect = KeyboardInterrupt()
+    target.remove_mask.side_effect = failure_type("P:/private/cleanup SECRET_CLEANUP_BASE_TOKEN")
 
     result = _load("add_mask").main(
         layer_uid=88,
@@ -384,8 +385,10 @@ def test_smart_mask_cleanup_leaves_base_exceptions_to_the_skill_boundary(monkeyp
     )
 
     assert result["success"] is False
-    assert result["error"] == "interrupted"
-    assert result["_meta"]["dcc.error"]["type"] == "KeyboardInterrupt"
+    assert result["error"] == "HOST_SMART_MASK_INSERT_EMPTY"
+    assert result["context"]["cleanup"] == {"attempted": True, "status": "unconfirmed"}
+    assert "private" not in str(result).lower()
+    assert "secret_cleanup_base_token" not in str(result).lower()
 
 
 def test_mask_host_errors_cannot_inject_public_error_codes(monkeypatch) -> None:
@@ -416,6 +419,26 @@ def test_mask_hostile_exception_args_cannot_escape_error_rendering(monkeypatch) 
     assert result["context"]["cleanup"] == {"attempted": False, "status": "not_needed"}
     assert "private" not in str(result).lower()
     assert "secret_args_token" not in str(result).lower()
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_mask_hostile_base_exception_args_cannot_escape_error_rendering(monkeypatch, failure_type) -> None:
+    class HostileRuntimeError(RuntimeError):
+        def __getattribute__(self, name: str):
+            if name == "args":
+                raise failure_type("P:/private/mask SECRET_MASK_BASE_TOKEN")
+            return super().__getattribute__(name)
+
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
+    target.add_mask.side_effect = HostileRuntimeError("HOST_READBACK_MASK_MISSING")
+
+    result = _load("add_mask").main(layer_uid=88, kind="black")
+
+    assert result["success"] is False
+    assert result["error"] == "PAINTER_MASK_OPERATION_FAILED"
+    assert result["context"]["cleanup"] == {"attempted": False, "status": "not_needed"}
+    assert "private" not in str(result).lower()
+    assert "secret_mask_base_token" not in str(result).lower()
 
 
 def test_import_resource_is_bounded_and_requires_resource_catalog_readback(monkeypatch, tmp_path) -> None:
@@ -781,6 +804,24 @@ def test_export_host_status_and_message_cannot_become_public_details(monkeypatch
     assert "secret_status_token" not in str(result).lower()
     assert "secret_message_token" not in str(result).lower()
     assert "traceback" not in str(result).lower()
+
+
+@pytest.mark.parametrize("failure_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_export_hostile_base_exception_args_cannot_escape_error_rendering(monkeypatch, tmp_path, failure_type) -> None:
+    class HostileRuntimeError(RuntimeError):
+        def __getattribute__(self, name: str):
+            if name == "args":
+                raise failure_type("P:/private/export SECRET_EXPORT_BASE_TOKEN")
+            return super().__getattribute__(name)
+
+    preset = _install_export_failure_host(monkeypatch, error=HostileRuntimeError("HOST_EXPORT_FAILED"))
+
+    result = _load("export_textures").main(export_path=str(tmp_path / "textures"), preset=preset)
+
+    assert result["success"] is False
+    assert result["error"] == "PAINTER_TEXTURE_EXPORT_FAILED"
+    assert "private" not in str(result).lower()
+    assert "secret_export_base_token" not in str(result).lower()
 
 
 def test_inspect_project_returns_diffable_texture_and_layer_state(monkeypatch) -> None:
