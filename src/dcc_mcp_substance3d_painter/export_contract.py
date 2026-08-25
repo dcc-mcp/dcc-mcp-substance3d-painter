@@ -8,6 +8,15 @@ from typing import Any
 _FILE_NAME = re.compile(r"^[A-Za-z0-9_$().-]{1,128}$")
 _MAP_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _CHANNELS = {"R", "G", "B", "A", "RGB", "RGB+A"}
+_DESTINATION_OCCUPANCY = {
+    "R": frozenset({"R"}),
+    "G": frozenset({"G"}),
+    "B": frozenset({"B"}),
+    "A": frozenset({"A"}),
+    "RGB": frozenset({"R", "G", "B"}),
+    "RGB+A": frozenset({"R", "G", "B", "A"}),
+}
+_COMPOSITE_DESTINATIONS = {"RGB", "RGB+A"}
 
 
 def build_export_preset(
@@ -36,6 +45,7 @@ def build_export_preset(
         if not isinstance(channels, list) or not 1 <= len(channels) <= 4:
             raise ValueError(f"maps[{index}].channels must contain between 1 and 4 channels")
         destinations = set()
+        occupied_destinations: set[str] = set()
         resolved_channels = []
         for channel_index, channel in enumerate(channels):
             if not isinstance(channel, dict):
@@ -45,11 +55,15 @@ def build_export_preset(
             source_map = str(channel.get("source_map", ""))
             if destination not in _CHANNELS or source_channel not in _CHANNELS:
                 raise ValueError("destination and source_channel must be bounded Painter channels")
-            if destination in destinations:
-                raise ValueError(f"maps[{index}] contains duplicate destination channel {destination}")
+            occupied = _DESTINATION_OCCUPANCY[destination]
+            if occupied_destinations.intersection(occupied):
+                raise ValueError("DESTINATION_CHANNELS_OVERLAP")
+            if destinations and (destination in _COMPOSITE_DESTINATIONS or destinations & _COMPOSITE_DESTINATIONS):
+                raise ValueError("DESTINATION_CHANNELS_OVERLAP")
             if not _MAP_NAME.fullmatch(source_map):
                 raise ValueError(f"maps[{index}].channels[{channel_index}].source_map is invalid")
             destinations.add(destination)
+            occupied_destinations.update(occupied)
             resolved_channels.append(
                 {
                     "destChannel": destination,

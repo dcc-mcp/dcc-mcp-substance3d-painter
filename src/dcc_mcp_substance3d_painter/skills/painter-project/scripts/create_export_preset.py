@@ -20,7 +20,7 @@ def main(
     try:
         preset = build_export_preset(name, maps, bit_depth, dithering)
     except (TypeError, ValueError) as exc:
-        return skill_error("Invalid Painter export preset", str(exc))
+        return skill_error("Invalid Painter export preset", "INVALID_EXPORT_PRESET", validation_error=str(exc))
     return skill_success("Created bounded Painter export preset", preset=preset)
 
 

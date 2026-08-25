@@ -8,6 +8,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parent.parent
@@ -227,7 +228,9 @@ def test_mask_generator_and_layer_tree_share_the_same_host_readback(monkeypatch)
     ]
 
 
-def test_smart_mask_validates_resource_and_reads_back_inserted_effects(monkeypatch) -> None:
+def _install_smart_mask_host(
+    monkeypatch, inserted_effects: list[object]
+) -> tuple[ModuleType, ModuleType, object, MagicMock]:
     stack = object()
     state = {"masked": False, "effects": []}
     black = SimpleNamespace(name="Black")
@@ -236,14 +239,9 @@ def test_smart_mask_validates_resource_and_reads_back_inserted_effects(monkeypat
     target.get_stack.return_value = stack
     target.has_mask.side_effect = lambda: state["masked"]
     target.add_mask.side_effect = lambda _background: state.update(masked=True)
+    target.remove_mask.side_effect = lambda: state.update(masked=False, effects=[])
     target.get_mask_background.return_value = black
     target.mask_effects.side_effect = lambda: list(state["effects"])
-    effect = MagicMock()
-    effect.uid.return_value = 101
-    effect.get_name.return_value = "Edge Wear"
-    effect.get_type.return_value = SimpleNamespace(name="GeneratorEffect")
-    effect.get_source.side_effect = RuntimeError("smart-mask effect sources are inspected separately")
-
     identifier = SimpleNamespace(url=lambda: "resource://starter_assets/edge-wear")
     smart_mask = SimpleNamespace(
         identifier=lambda: identifier,
@@ -262,14 +260,24 @@ def test_smart_mask_validates_resource_and_reads_back_inserted_effects(monkeypat
     def insert_smart_mask(position, resource_id):
         assert position == "inside-mask"
         assert resource_id is identifier
-        state["effects"].append(effect)
-        return [effect]
+        state["effects"].extend(inserted_effects)
+        return inserted_effects
 
     layerstack.insert_smart_mask = MagicMock(side_effect=insert_smart_mask)
     resource = ModuleType("substance_painter.resource")
     resource.ResourceID = SimpleNamespace(from_url=MagicMock(return_value=identifier))
     resource.Resource = SimpleNamespace(retrieve=MagicMock(return_value=[smart_mask]))
     _install(monkeypatch, project=project, textureset=textureset, layerstack=layerstack, resource=resource)
+    return layerstack, resource, identifier, target
+
+
+def test_smart_mask_validates_resource_and_reads_back_inserted_effects(monkeypatch) -> None:
+    effect = MagicMock()
+    effect.uid.return_value = 101
+    effect.get_name.return_value = "Edge Wear"
+    effect.get_type.return_value = SimpleNamespace(name="GeneratorEffect")
+    effect.get_source.side_effect = RuntimeError("smart-mask effect sources are inspected separately")
+    _layerstack, resource, identifier, _target = _install_smart_mask_host(monkeypatch, [effect])
 
     result = _load("add_mask").main(
         layer_uid=88,
@@ -281,6 +289,53 @@ def test_smart_mask_validates_resource_and_reads_back_inserted_effects(monkeypat
     assert result["context"]["kind"] == "smart"
     assert result["context"]["effects"][0]["uid"] == 101
     resource.Resource.retrieve.assert_called_once_with(identifier)
+
+
+def test_smart_mask_rejects_empty_host_insertion_and_confirms_cleanup(monkeypatch) -> None:
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
+
+    result = _load("add_mask").main(
+        layer_uid=88,
+        kind="smart",
+        resource_url="resource://starter_assets/edge-wear",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "HOST_SMART_MASK_INSERT_EMPTY"
+    assert result["context"]["cleanup"] == {"attempted": True, "status": "confirmed"}
+    target.remove_mask.assert_called_once_with()
+
+
+def test_smart_mask_reports_partial_readback_and_unconfirmed_cleanup(monkeypatch) -> None:
+    first = MagicMock()
+    first.uid.return_value = 201
+    second = MagicMock()
+    second.uid.return_value = 202
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [first, second])
+    target.mask_effects.side_effect = lambda: [first]
+    target.remove_mask.side_effect = RuntimeError("host cleanup status is unknown")
+
+    result = _load("add_mask").main(
+        layer_uid=88,
+        kind="smart",
+        resource_url="resource://starter_assets/edge-wear",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "HOST_READBACK_SMART_MASK_MISMATCH"
+    assert result["context"]["cleanup"] == {"attempted": True, "status": "unconfirmed"}
+    assert "rollback" not in str(result).lower()
+
+
+def test_mask_host_errors_cannot_inject_public_error_codes(monkeypatch) -> None:
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
+    target.add_mask.side_effect = RuntimeError("HOST_SECRET_TOKEN")
+
+    result = _load("add_mask").main(layer_uid=88, kind="black")
+
+    assert result["success"] is False
+    assert result["error"] == "PAINTER_MASK_OPERATION_FAILED"
+    assert "secret" not in str(result).lower()
 
 
 def test_import_resource_is_bounded_and_requires_resource_catalog_readback(monkeypatch, tmp_path) -> None:
@@ -313,6 +368,135 @@ def test_import_resource_is_bounded_and_requires_resource_catalog_readback(monke
     failed = _load("import_resource").main(file_path=str(source), usage="texture", name="missing")
     assert failed["success"] is False
     assert "readback" in failed["error"].lower()
+
+
+def test_import_resource_rejects_usage_extension_mismatch_before_host_io(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "texture.yaml"
+    source.write_text("not: a texture", encoding="utf-8")
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    resource = ModuleType("substance_painter.resource")
+    resource.import_project_resource = MagicMock()
+    _install(monkeypatch, project=project, resource=resource)
+
+    result = _load("import_resource").main(file_path=str(source), usage="texture")
+
+    assert result["success"] is False
+    assert result["error"] == "RESOURCE_EXTENSION_MISMATCH"
+    project.is_open.assert_not_called()
+    resource.import_project_resource.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("usage_name", "suffix"),
+    [
+        ("alpha", ".png"),
+        ("texture", ".tiff"),
+        ("environment", ".hdr"),
+        ("environment", ".exr"),
+        ("generator", ".sbsar"),
+        ("smart_material", ".spsm"),
+        ("smart_mask", ".spmsk"),
+        ("export", ".spexp"),
+    ],
+)
+def test_import_resource_accepts_only_the_declared_painter_resource_family(
+    monkeypatch, tmp_path, usage_name: str, suffix: str
+) -> None:
+    source = tmp_path / f"resource{suffix}"
+    source.write_bytes(b"bounded resource")
+    enum_name = usage_name.upper()
+    usage = SimpleNamespace(name=enum_name)
+    identifier = SimpleNamespace(url=lambda: f"resource://project/{usage_name}")
+    imported = SimpleNamespace(identifier=lambda: identifier, usages=lambda: [usage])
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    resource = ModuleType("substance_painter.resource")
+    resource.Usage = SimpleNamespace(**{enum_name: usage})
+    resource.import_project_resource = MagicMock(return_value=imported)
+    resource.Resource = SimpleNamespace(retrieve=MagicMock(return_value=[imported]))
+    _install(monkeypatch, project=project, resource=resource)
+
+    result = _load("import_resource").main(file_path=str(source), usage=usage_name)
+
+    assert result["success"] is True
+    resource.import_project_resource.assert_called_once_with(
+        str(source.resolve()),
+        usage,
+        name="resource",
+        group=None,
+    )
+
+
+def test_import_resource_rejects_symlinks_before_host_io(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "source.png"
+    source.write_bytes(b"texture")
+    link = tmp_path / "linked.png"
+    try:
+        link.symlink_to(source)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    resource = ModuleType("substance_painter.resource")
+    resource.import_project_resource = MagicMock()
+    _install(monkeypatch, project=project, resource=resource)
+
+    result = _load("import_resource").main(file_path=str(link), usage="texture")
+
+    assert result["success"] is False
+    assert result["error"] == "RESOURCE_NOT_REGULAR_FILE"
+    project.is_open.assert_not_called()
+    resource.import_project_resource.assert_not_called()
+
+
+def test_import_resource_enforces_the_exact_byte_limit_before_host_io(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "bounded.png"
+    module = _load("import_resource")
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    usage = SimpleNamespace(name="TEXTURE")
+    identifier = SimpleNamespace(url=lambda: "resource://project/bounded")
+    imported = SimpleNamespace(identifier=lambda: identifier, usages=lambda: [usage])
+    resource = ModuleType("substance_painter.resource")
+    resource.Usage = SimpleNamespace(TEXTURE=usage)
+    resource.import_project_resource = MagicMock(return_value=imported)
+    resource.Resource = SimpleNamespace(retrieve=MagicMock(return_value=[imported]))
+    _install(monkeypatch, project=project, resource=resource)
+
+    with source.open("wb") as stream:
+        stream.truncate(module._MAX_RESOURCE_BYTES + 1)
+    too_large = module.main(file_path=str(source), usage="texture")
+
+    assert too_large["success"] is False
+    assert too_large["error"] == "RESOURCE_SIZE_OUT_OF_RANGE"
+    project.is_open.assert_not_called()
+    resource.import_project_resource.assert_not_called()
+
+    with source.open("r+b") as stream:
+        stream.truncate(module._MAX_RESOURCE_BYTES)
+    accepted = module.main(file_path=str(source), usage="texture")
+
+    assert accepted["success"] is True
+    resource.import_project_resource.assert_called_once()
+
+
+def test_import_resource_does_not_expose_host_exception_details(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "safe.png"
+    source.write_bytes(b"texture")
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    resource = ModuleType("substance_painter.resource")
+    resource.Usage = SimpleNamespace(TEXTURE=SimpleNamespace(name="TEXTURE"))
+    resource.import_project_resource = MagicMock(side_effect=RuntimeError(r"C:\private\asset.png token=secret"))
+    _install(monkeypatch, project=project, resource=resource)
+
+    result = _load("import_resource").main(file_path=str(source), usage="texture")
+
+    assert result["success"] is False
+    assert result["error"] == "PAINTER_RESOURCE_IMPORT_READBACK_FAILED"
+    assert "private" not in str(result).lower()
+    assert "secret" not in str(result).lower()
 
 
 def test_export_preset_builds_bounded_painter_config() -> None:
@@ -352,6 +536,73 @@ def test_export_preset_builds_bounded_painter_config() -> None:
             }
         ],
     }
+
+
+@pytest.mark.parametrize(
+    "destinations",
+    [
+        ["RGB", "R"],
+        ["RGB", "G"],
+        ["RGB", "B"],
+        ["RGB", "A"],
+        ["RGB+A", "R"],
+        ["R", "RGB+A"],
+    ],
+)
+def test_export_preset_rejects_overlapping_or_mixed_composite_destinations(destinations: list[str]) -> None:
+    channels = [
+        {"destination": destination, "source_channel": "R", "source_map": f"source{index}"}
+        for index, destination in enumerate(destinations)
+    ]
+
+    result = _load("create_export_preset").main(
+        name="packed-map",
+        maps=[{"file_name": "$textureSet_Packed", "channels": channels}],
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "INVALID_EXPORT_PRESET"
+    assert result["context"]["validation_error"] == "DESTINATION_CHANNELS_OVERLAP"
+
+
+def test_export_preset_accepts_disjoint_scalar_destinations_and_one_composite() -> None:
+    scalar = _load("create_export_preset").main(
+        name="packed-scalars",
+        maps=[
+            {
+                "file_name": "$textureSet_Packed",
+                "channels": [
+                    {"destination": channel, "source_channel": "R", "source_map": f"source{index}"}
+                    for index, channel in enumerate(["R", "G", "B", "A"])
+                ],
+            }
+        ],
+    )
+    composite = _load("create_export_preset").main(
+        name="rgba-map",
+        maps=[
+            {
+                "file_name": "$textureSet_RGBA",
+                "channels": [{"destination": "RGB+A", "source_channel": "RGB+A", "source_map": "baseColor"}],
+            }
+        ],
+    )
+
+    assert scalar["success"] is True
+    assert composite["success"] is True
+
+
+def test_authoring_schema_publishes_import_and_destination_limits() -> None:
+    tools = {item["name"]: item for item in yaml.safe_load(TOOLS.read_text(encoding="utf-8"))["tools"]}
+    import_schema = tools["import_resource"]["input_schema"]["properties"]
+    channel_schema = tools["create_export_preset"]["input_schema"]["properties"]["maps"]["items"]["properties"][
+        "channels"
+    ]
+
+    assert "512 MiB" in import_schema["file_path"]["description"]
+    assert ".sbsar" in import_schema["usage"]["description"]
+    assert "non-overlapping" in channel_schema["description"]
+    assert channel_schema["items"]["properties"]["destination"]["enum"] == ["R", "G", "B", "A", "RGB", "RGB+A"]
 
 
 def test_selective_export_verifies_files_and_png_resolution(monkeypatch, tmp_path) -> None:

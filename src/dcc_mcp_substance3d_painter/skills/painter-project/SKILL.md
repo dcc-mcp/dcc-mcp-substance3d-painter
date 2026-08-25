@@ -38,7 +38,10 @@ validated smart-mask resource, and generator effects require a validated
 generator resource. Every mutation is read back from the selected Painter
 stack before success. Import project resources with an explicit bounded
 usage, then pass their stable resource URL to a mask, generator, or smart
-material call in the same host session.
+material call in the same host session. Imports fail before Painter I/O unless
+the source is a regular non-link file of at most 512 MiB and its extension
+matches the declared resource family: raster alpha/texture, HDR/EXR environment,
+SBSAR generator, SPSM smart material, SPMSK smart mask, or SPEXP export preset.
 
 Use `create_export_preset` to build a bounded inline PNG preset with explicit
 document-map channel routing. Pass that object to `export_textures` with one
@@ -46,7 +49,9 @@ or more exact texture-set names. The export succeeds only when Painter returns
 `Success`, every returned file exists under the requested directory, and each
 PNG resolution matches the selected texture sets. Existing Painter preset
 URLs remain supported; their output files are checked for existence, but only
-the typed inline PNG path provides resolution verification.
+the typed inline PNG path provides resolution verification. Destination channels
+must be disjoint; `RGB` and `RGB+A` are exclusive and cannot be mixed with scalar
+R, G, B, or A destinations in the same output map.
 
 `inspect_project` includes dirty/busy/editable state, texture-set and UV-tile
 resolutions, channels, mesh-map resource URLs, and full layer trees so callers
