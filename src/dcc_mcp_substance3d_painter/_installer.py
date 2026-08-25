@@ -402,13 +402,22 @@ def _resume_windows_process(process: subprocess.Popen[bytes]) -> None:
         raise OSError("No suspended supervisor thread could be resumed")
 
 
-def _start_owned_process(command: Sequence[str]) -> Tuple[subprocess.Popen[bytes], _ProcessTreeOwner]:
+def _start_owned_process(
+    command: Sequence[str],
+    *,
+    cwd: Optional[Path] = None,
+    environ: Optional[Mapping[str, str]] = None,
+) -> Tuple[subprocess.Popen[bytes], _ProcessTreeOwner]:
     kwargs: Dict[str, Any] = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
         "close_fds": True,
     }
+    if cwd is not None:
+        kwargs["cwd"] = os.fspath(cwd)
+    if environ is not None:
+        kwargs["env"] = dict(environ)
     if os.name == "posix":
         process = subprocess.Popen(list(command), start_new_session=True, **kwargs)
         return process, _PosixProcessTreeOwner(process)
@@ -440,36 +449,105 @@ def _start_owned_process(command: Sequence[str]) -> Tuple[subprocess.Popen[bytes
 
 
 def _cleanup_owned_process(process: subprocess.Popen[bytes], owner: _ProcessTreeOwner) -> None:
+    cleanup_failed = False
     try:
-        owner.terminate()
-    except (NotImplementedError, OSError):
-        if process.poll() is None:
-            process.kill()
-    try:
-        process.wait(timeout=3.0)
-    except (OSError, subprocess.TimeoutExpired):
-        if process.poll() is None:
-            process.kill()
         try:
-            process.wait(timeout=1.0)
+            owner.terminate()
+        except (NotImplementedError, OSError):
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    cleanup_failed = True
+        try:
+            process.wait(timeout=3.0)
         except (OSError, subprocess.TimeoutExpired):
-            pass
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    cleanup_failed = True
+            try:
+                process.wait(timeout=1.0)
+            except (OSError, subprocess.TimeoutExpired):
+                cleanup_failed = True
+        if process.poll() is None:
+            cleanup_failed = True
     finally:
-        owner.wait_empty(3.0)
-        owner.close()
+        try:
+            if owner.wait_empty(3.0) is not True:
+                cleanup_failed = True
+        except BaseException:
+            cleanup_failed = True
+        try:
+            owner.close()
+        except BaseException:
+            cleanup_failed = True
+    if cleanup_failed:
+        raise LifecycleFailure(
+            "cleanup",
+            "Interpreter probe process-tree cleanup could not be verified.",
+            INSTALL_EXIT_VERIFY,
+        )
+
+
+def _isolated_probe_environment() -> Dict[str, str]:
+    blocked = {"__PYVENV_LAUNCHER__", "VIRTUAL_ENV"}
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.upper().startswith("PYTHON") and key.upper() not in blocked
+    }
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONSAFEPATH"] = "1"
+    return environment
+
+
+@contextmanager
+def _probe_workspace() -> Iterator[Path]:
+    root = Path(tempfile.mkdtemp(prefix="dcc-mcp-painter-probe-"))
+    primary: Optional[BaseException] = None
+    try:
+        yield root
+    except BaseException as exc:
+        primary = exc
+    cleanup_error: Optional[OSError] = None
+    deadline = time.monotonic() + 3.0
+    while root.exists():
+        try:
+            shutil.rmtree(root)
+        except FileNotFoundError:
+            break
+        except OSError as exc:
+            cleanup_error = exc
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.02)
+        else:
+            cleanup_error = None
+            break
+    if cleanup_error is not None or root.exists():
+        failure = LifecycleFailure(
+            "cleanup",
+            "Interpreter probe process-tree cleanup could not be verified.",
+            INSTALL_EXIT_VERIFY,
+        )
+        if primary is not None:
+            raise failure from primary
+        raise failure from cleanup_error
+    if primary is not None:
+        raise primary
 
 
 def _run_bounded_command(command: Sequence[str], timeout: float = 20.0) -> Dict[str, Any]:
     """Run a metadata probe under an owned supervisor tree and bounded deadline."""
-    with tempfile.TemporaryDirectory(prefix="dcc-mcp-painter-probe-") as directory:
-        root = Path(directory)
+    with _probe_workspace() as root:
         status_path = root / "status.json"
         stdout_path = root / "stdout.bin"
         stderr_path = root / "stderr.bin"
         supervisor = [
             sys.executable,
-            "-m",
-            "dcc_mcp_substance3d_painter._probe_supervisor",
+            os.fspath(Path(__file__).with_name("_probe_supervisor.py")),
             str(status_path),
             str(stdout_path),
             str(stderr_path),
@@ -477,7 +555,11 @@ def _run_bounded_command(command: Sequence[str], timeout: float = 20.0) -> Dict[
             *list(command),
         ]
         try:
-            process, owner = _start_owned_process(supervisor)
+            process, owner = _start_owned_process(
+                supervisor,
+                cwd=root,
+                environ=_isolated_probe_environment(),
+            )
         except OSError as exc:
             return {"success": False, "reason": f"launch failed: {exc.__class__.__name__}"}
         deadline = time.monotonic() + max(0.1, min(float(timeout), 30.0))
@@ -567,14 +649,74 @@ def _query_python(python_path: Path) -> Dict[str, str]:
     script = r"""
 import importlib.metadata as md
 import json
+import os
 import pathlib
+import re
 import sys
 import sysconfig
+from urllib.parse import unquote, urlsplit
+
+paths = sysconfig.get_paths()
+purelib = pathlib.Path(paths["purelib"]).resolve()
+platlib = pathlib.Path(paths["platlib"]).resolve()
+venv_root = pathlib.Path(sys.executable).resolve().parent.parent
+if (venv_root / "pyvenv.cfg").is_file():
+    if os.name == "nt":
+        purelib = platlib = (venv_root / "Lib" / "site-packages").resolve()
+    else:
+        purelib = platlib = (
+            venv_root / "lib" / ("python%d.%d" % sys.version_info[:2]) / "site-packages"
+        ).resolve()
+roots = []
+for root in (purelib, platlib):
+    if root not in roots:
+        roots.append(root)
+        sys.path.append(str(root))
+
+def normalized(value):
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+def distribution(name):
+    matches = {}
+    for root in roots:
+        for candidate in md.distributions(path=[str(root)]):
+            if normalized(str(candidate.metadata.get("Name") or "")) != normalized(name):
+                continue
+            identity = str(pathlib.Path(getattr(candidate, "_path")).resolve())
+            matches[identity] = candidate
+    if len(matches) != 1:
+        raise RuntimeError("distribution identity unavailable")
+    return next(iter(matches.values()))
+
+def direct_url(distribution):
+    raw = distribution.read_text("direct_url.json")
+    return json.loads(raw) if raw else None
+
+def add_editable(distribution, package, payload):
+    if not isinstance(payload, dict) or payload.get("dir_info", {}).get("editable") is not True:
+        return
+    parsed = urlsplit(str(payload.get("url") or ""))
+    if parsed.scheme != "file" or parsed.query or parsed.fragment:
+        raise RuntimeError("editable identity unavailable")
+    raw = unquote(parsed.path)
+    if re.fullmatch(r"/[A-Za-z]:/.*", raw):
+        raw = raw[1:]
+    source = pathlib.Path(raw).resolve()
+    for candidate in (source / "src" / package / "__init__.py", source / package / "__init__.py"):
+        if candidate.is_file():
+            sys.path.insert(0, str(candidate.parent.parent))
+            return
+    raise RuntimeError("editable package unavailable")
+
+ad = distribution("dcc-mcp-substance3d-painter")
+co = distribution("dcc-mcp-core")
+au = direct_url(ad)
+cu = direct_url(co)
+add_editable(ad, "dcc_mcp_substance3d_painter", au)
+add_editable(co, "dcc_mcp_core", cu)
+
 import dcc_mcp_core
 import dcc_mcp_substance3d_painter as adapter
-
-ad = md.distribution("dcc-mcp-substance3d-painter")
-co = md.distribution("dcc-mcp-core")
 
 def owner(distribution, target):
     for item in tuple(distribution.files or ()):
@@ -588,13 +730,10 @@ ap = str(pathlib.Path(adapter.__file__).resolve())
 cp = str(pathlib.Path(dcc_mcp_core.__file__).resolve())
 ar, ah, az = owner(ad, pathlib.Path(ap))
 cr, ch, cz = owner(co, pathlib.Path(cp))
-au = ad.read_text("direct_url.json")
-cu = co.read_text("direct_url.json")
-paths = sysconfig.get_paths()
 print(json.dumps({
     "python_version": ".".join(map(str, sys.version_info[:3])),
-    "python_root": str(pathlib.Path(paths["purelib"]).resolve()),
-    "python_platlib": str(pathlib.Path(paths["platlib"]).resolve()),
+    "python_root": str(purelib),
+    "python_platlib": str(platlib),
     "executable": sys.executable,
     "core_version": dcc_mcp_core.__version__,
     "core_dist_version": co.version,
@@ -610,11 +749,14 @@ print(json.dumps({
     "core_record_hash": ch,
     "adapter_record_size": az,
     "core_record_size": cz,
-    "adapter_direct_url": json.loads(au) if au else None,
-    "core_direct_url": json.loads(cu) if cu else None,
+    "adapter_direct_url": au,
+    "core_direct_url": cu,
 }))
 """.strip()
-    completed = _run_bounded_command([str(python_path), "-c", script], timeout=20.0)
+    completed = _run_bounded_command(
+        [str(python_path), "-I", "-S", "-c", script],
+        timeout=20.0,
+    )
     if not completed.get("success") or completed.get("truncated"):
         reason = str(completed.get("reason") or "probe failed")
         public_reason = "probe timed out" if reason == "probe timed out" else "probe failed"

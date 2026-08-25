@@ -37,7 +37,7 @@ def _write_hostile_distribution(root: Path, package: str, distribution: str, ver
     )
 
 
-def _verify_hostile_pythonpath_is_rejected() -> None:
+def _verify_hostile_pythonpath_is_ignored() -> None:
     with tempfile.TemporaryDirectory(prefix="painter-wheel-shadow-") as temporary:
         hostile = Path(temporary)
         _write_hostile_distribution(
@@ -47,14 +47,19 @@ def _verify_hostile_pythonpath_is_rejected() -> None:
             _installer.__version__,
         )
         _write_hostile_distribution(hostile, "dcc_mcp_core", "dcc-mcp-core", _installer.MIN_CORE_VERSION)
+        hostile.joinpath("sitecustomize.py").write_text(
+            f"import sysconfig\nsysconfig.get_paths=lambda:{{'purelib':{str(hostile)!r},'platlib':{str(hostile)!r}}}\n",
+            encoding="utf-8",
+        )
         previous = os.environ.get("PYTHONPATH")
         os.environ["PYTHONPATH"] = str(hostile)
         try:
-            try:
-                _installer._query_python(Path(sys.executable).resolve())
-            except _installer.LifecycleFailure:
-                pass
-            else:
+            result = _installer._query_python(Path(sys.executable).resolve())
+            for key in ("adapter_file", "core_file", "python_root", "python_platlib"):
+                try:
+                    Path(result[key]).resolve().relative_to(hostile.resolve())
+                except ValueError:
+                    continue
                 raise SystemExit("installed-wheel interpreter accepted a hostile PYTHONPATH distribution")
         finally:
             if previous is None:
@@ -64,7 +69,7 @@ def _verify_hostile_pythonpath_is_rejected() -> None:
 
 
 def run() -> int:
-    _verify_hostile_pythonpath_is_rejected()
+    _verify_hostile_pythonpath_is_ignored()
     stdout = io.StringIO()
     stderr = io.StringIO()
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
