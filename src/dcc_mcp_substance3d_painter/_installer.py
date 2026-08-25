@@ -154,7 +154,10 @@ def _profile_lock(profile: Path) -> Iterator[None]:
             os.close(descriptor)
         if identity is not None:
             try:
-                current = lock_path.stat(follow_symlinks=False)
+                # pathlib.Path.stat did not accept follow_symlinks on the
+                # supported Python 3.9 floor; os.stat has supported it for the
+                # entire compatibility range.
+                current = os.stat(lock_path, follow_symlinks=False)
                 if (int(current.st_dev), int(current.st_ino)) == identity:
                     lock_path.unlink()
             except OSError:
