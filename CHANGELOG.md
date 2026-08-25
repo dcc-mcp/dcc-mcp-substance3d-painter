@@ -9,6 +9,7 @@
 * add Painter install lifecycle ([bbf2d41](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/bbf2d41a0f8504e1a7c0fd37b63fa1e0b7082b63))
 * add Painter layer and export authoring ([a42e9a8](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/a42e9a833d181b517df96c79d1a868a093829b61))
 * complete Painter project job lifecycle ([ff1e29d](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/ff1e29ddced8e89d26032712f8dd7c33dad1bb02))
+* report effective Painter color management ([c371b02](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/c371b025d53d18163948d7a23e074083e7860192))
 
 
 ### Bug Fixes
