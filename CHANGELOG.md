@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.4.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.3.0...v0.4.0) (2026-08-25)
+
+
+### Features
+
+* add async mesh map baking ([83b4d81](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/83b4d8108b6236e13f9d9e63d8243935788f3319))
+* add Painter install lifecycle ([bbf2d41](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/bbf2d41a0f8504e1a7c0fd37b63fa1e0b7082b63))
+* add Painter layer and export authoring ([a42e9a8](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/a42e9a833d181b517df96c79d1a868a093829b61))
+* complete Painter project job lifecycle ([ff1e29d](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/ff1e29ddced8e89d26032712f8dd7c33dad1bb02))
+
+
+### Bug Fixes
+
+* align Painter project execution metadata ([28bfde2](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/28bfde2012f9604e30b5e7eae0377c7909739d1e))
+* bind Painter install provenance ([2090a4e](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/2090a4e9b17bd05eb656b887f86643fbc5175652))
+* harden Painter authoring contracts ([c1e5c4b](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/c1e5c4b0ccfef0cb80f381edd34ba1ceeab71665))
+* harden painter authoring error receipts ([e4fa64a](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/e4fa64a6b0ab7218358f70fc6aa473135b296553))
+* harden Painter install lifecycle ([3804e9a](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/3804e9abb4d193322ce33116cccee1dfa0701a27))
+* isolate Painter install probes ([06b13fe](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/06b13fe345c12744c53521da4b0177313c40ea50))
+* preserve painter host failures ([b313715](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/b31371586df3b947a2152459645549f5c884e5bb))
+* preserve Painter interpreter environment ([696043d](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/696043dac4b8a912bd746687efb75b213d0eb7df))
+* preserve Python 3.9 lock cleanup ([5405fc9](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/5405fc9d2f2f02b0f5f69a98ebe5806bf31420ac))
+
 ## [0.3.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.2.0...v0.3.0) (2026-07-29)
 
 
