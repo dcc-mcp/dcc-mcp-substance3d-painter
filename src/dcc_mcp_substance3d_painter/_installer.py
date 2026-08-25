@@ -659,7 +659,10 @@ from urllib.parse import unquote, urlsplit
 paths = sysconfig.get_paths()
 purelib = pathlib.Path(paths["purelib"]).resolve()
 platlib = pathlib.Path(paths["platlib"]).resolve()
-venv_root = pathlib.Path(sys.executable).resolve().parent.parent
+# Keep the selected virtual-environment entry point lexical here.  Resolving
+# the POSIX ``bin/python`` symlink collapses it to the base interpreter and
+# loses the environment whose distributions are being attested.
+venv_root = pathlib.Path(os.path.abspath(sys.executable)).parent.parent
 if (venv_root / "pyvenv.cfg").is_file():
     if os.name == "nt":
         purelib = platlib = (venv_root / "Lib" / "site-packages").resolve()
@@ -1124,6 +1127,11 @@ def _detect_embedded_python_version(host: Path) -> Optional[str]:
     return next(iter(markers), None)
 
 
+def _selected_interpreter_path(value: str) -> Path:
+    """Return an absolute interpreter entry point without resolving venv links."""
+    return Path(os.path.abspath(os.path.expanduser(value)))
+
+
 def _resolve_context(
     dcc_path: Optional[str],
     python_path: Optional[str],
@@ -1140,7 +1148,7 @@ def _resolve_context(
         )
 
     selected_python = python_path or environ.get(_PYTHON_ENV) or sys.executable
-    interpreter = Path(selected_python).expanduser().resolve()
+    interpreter = _selected_interpreter_path(str(selected_python))
     if not interpreter.is_file():
         raise LifecycleFailure("python", f"Target interpreter does not exist: {interpreter}")
     python = _query_python(interpreter)

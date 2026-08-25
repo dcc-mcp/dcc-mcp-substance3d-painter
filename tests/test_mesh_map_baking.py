@@ -184,9 +184,8 @@ def test_bake_mesh_maps_is_a_pollable_core_job_that_preserves_the_host(monkeypat
     server.register_builtin_actions()
     assert server.load_skill("painter-project")
     server.start(install_atexit_hook=False)
-    assert server.mcp_url is not None
-    original_instance_id = server.instance_id
-    assert original_instance_id is not None
+    original_mcp_url = server.mcp_url
+    assert original_mcp_url is not None
 
     def exercise() -> None:
         client = McpClient(server.mcp_url)
@@ -213,7 +212,8 @@ def test_bake_mesh_maps_is_a_pollable_core_job_that_preserves_the_host(monkeypat
         status = _job(_structured(client.call_tool("jobs_get_status", {"job_id": job_id})))
         assert status["status"] in {"pending", "running"}
         assert status.get("progress", 0) in {0, None}
-        assert server.instance_id == original_instance_id
+        assert server.is_running
+        assert server.mcp_url == original_mcp_url
         assert project.is_open()
         project.close.assert_not_called()
 
@@ -250,7 +250,8 @@ def test_bake_mesh_maps_is_a_pollable_core_job_that_preserves_the_host(monkeypat
         assert "high-poly mesh is missing" in result["error"]
         parameters.set_enabled_bakers.assert_called_once_with([ao_usage, normal_usage])
         baking.bake_async.assert_called_once_with(texture_set)
-        assert server.instance_id == original_instance_id
+        assert server.is_running
+        assert server.mcp_url == original_mcp_url
         assert project.is_open()
         project.close.assert_not_called()
         stop_pump.set()

@@ -54,7 +54,7 @@ def _verify_hostile_pythonpath_is_ignored() -> None:
         previous = os.environ.get("PYTHONPATH")
         os.environ["PYTHONPATH"] = str(hostile)
         try:
-            result = _installer._query_python(Path(sys.executable).resolve())
+            result = _installer._query_python(Path(sys.executable))
             for key in ("adapter_file", "core_file", "python_root", "python_platlib"):
                 try:
                     Path(result[key]).resolve().relative_to(hostile.resolve())
