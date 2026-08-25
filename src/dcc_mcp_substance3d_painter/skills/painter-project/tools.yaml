@@ -362,7 +362,7 @@ tools:
         - painter_project__inspect_project
         - painter_project__list_texture_sets
   - name: create_export_preset
-    description: Build a bounded inline PNG export preset with explicit document-map channel routing.
+    description: Build a bounded inline PNG export preset with explicit non-overlapping document-map channel routing.
     input_schema:
       type: object
       additionalProperties: false
@@ -390,6 +390,7 @@ tools:
                 type: array
                 minItems: 1
                 maxItems: 4
+                description: Destination assignments must be non-overlapping; RGB and RGB+A must each be the sole destination.
                 items:
                   type: object
                   additionalProperties: false
@@ -788,9 +789,11 @@ tools:
         file_path:
           type: string
           minLength: 1
+          description: Regular non-link file of at most 512 MiB whose extension matches the selected usage.
         usage:
           type: string
           enum: [alpha, environment, export, generator, smart_mask, smart_material, texture]
+          description: "Painter resource family: raster images for alpha/texture, HDR/EXR for environment, .sbsar generator, .spsm smart material, .spmsk smart mask, or .spexp export preset."
         name:
           type: string
           minLength: 1

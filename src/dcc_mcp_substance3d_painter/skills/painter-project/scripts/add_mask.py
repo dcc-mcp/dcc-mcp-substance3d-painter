@@ -12,6 +12,32 @@ from dcc_mcp_substance3d_painter.painter_state import (
     validate_resource,
 )
 
+_HOST_ERROR_CODES = {
+    "HOST_READBACK_MASK_BACKGROUND_MISMATCH",
+    "HOST_READBACK_MASK_MISSING",
+    "HOST_READBACK_SMART_MASK_MISMATCH",
+    "HOST_SMART_MASK_INSERT_EMPTY",
+}
+
+
+def _cleanup_added_mask(layerstack, target, layer_uid: int, target_stack) -> dict[str, object]:
+    cleanup: dict[str, object] = {"attempted": True, "status": "unconfirmed"}
+    try:
+        target.remove_mask()
+        readback = find_node(layerstack, layer_uid, target_stack)
+        if readback is not None and not bool(readback.has_mask()):
+            cleanup["status"] = "confirmed"
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        pass
+    return cleanup
+
+
+def _error_code(exc: Exception) -> str:
+    detail = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else None
+    if detail in _HOST_ERROR_CODES:
+        return detail
+    return "PAINTER_MASK_OPERATION_FAILED"
+
 
 @skill_entry
 def main(
@@ -57,6 +83,8 @@ def main(
             added_plain_mask = True
             position = layerstack.InsertPosition.inside_node(target, layerstack.NodeStack.Mask)
             inserted_effects = list(layerstack.insert_smart_mask(position, identifier))
+            if not inserted_effects:
+                raise RuntimeError("HOST_SMART_MASK_INSERT_EMPTY")
 
         readback = find_node(layerstack, int(layer_uid), target_stack)
         if readback is None or not bool(readback.has_mask()):
@@ -69,12 +97,10 @@ def main(
         if inserted_ids and not inserted_ids.issubset({int(effect.uid()) for effect in readback_effects}):
             raise RuntimeError("HOST_READBACK_SMART_MASK_MISMATCH")
     except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+        cleanup: dict[str, object] = {"attempted": False, "status": "not_needed"}
         if added_plain_mask and target is not None:
-            try:
-                target.remove_mask()
-            except (AttributeError, RuntimeError, TypeError, ValueError):
-                pass
-        return skill_error("Unable to add Painter mask", str(exc))
+            cleanup = _cleanup_added_mask(layerstack, target, int(layer_uid), target_stack)
+        return skill_error("Unable to add Painter mask", _error_code(exc), cleanup=cleanup)
 
     return skill_success(
         "Added Painter mask",
