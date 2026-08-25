@@ -28,7 +28,7 @@ def _error_code(exc: Exception) -> str:
     try:
         args = exc.args
         detail = args[0] if isinstance(args, tuple) and len(args) == 1 and isinstance(args[0], str) else None
-    except Exception:
+    except BaseException:
         return "PAINTER_TEXTURE_EXPORT_FAILED"
     if detail in _HOST_ERROR_CODES:
         return detail
