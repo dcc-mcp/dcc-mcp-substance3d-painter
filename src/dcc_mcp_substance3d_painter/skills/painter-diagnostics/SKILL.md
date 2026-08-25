@@ -2,7 +2,7 @@
 name: painter-diagnostics
 description: Read-only readiness diagnostics for a running Substance 3D Painter adapter.
 license: MIT
-compatibility: "Substance 3D Painter Python API; dcc-mcp-core 0.20.8+"
+compatibility: "Substance 3D Painter Python API; dcc-mcp-core 0.20.15+"
 allowed-tools: Python
 metadata:
   dcc-mcp:

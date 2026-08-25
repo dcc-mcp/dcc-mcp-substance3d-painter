@@ -60,6 +60,12 @@ installation, live verification, upgrades, and uninstall. See
 [install.md](install.md) for exact Windows, macOS, and Linux commands and the
 manual environment path.
 
+The lifecycle uses the released Core 0.20.15 Install SOP contract. Readiness is
+fail-closed unless the registry, independently observed process identity, and
+in-host diagnostics all bind the same Painter executable, start identity,
+adapter payload, and receipt. CI uses hermetic identity/probe fixtures; it does
+not claim to validate a real Adobe Painter launch.
+
 Set `DCC_MCP_SUBSTANCE3D_PAINTER_PORT` before launching Painter only when a
 fixed port is required; `0` keeps automatic allocation. Standard
 `DCC_MCP_GATEWAY_PORT` and `DCC_MCP_REGISTRY_DIR` settings are also honoured.
@@ -82,6 +88,7 @@ do not expose raw JavaScript or arbitrary script execution.
 python -m pip install -e ".[dev]"
 python -m pytest
 ruff check src tests tools
+uv lock --check
 python -m build
 ```
 

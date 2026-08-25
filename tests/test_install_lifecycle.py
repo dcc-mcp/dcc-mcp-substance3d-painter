@@ -3,10 +3,16 @@ from __future__ import annotations
 import json
 import os
 import sys
-import types
 from pathlib import Path
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _synthetic_painter_file_metadata(monkeypatch):
+    from dcc_mcp_substance3d_painter import _installer
+
+    monkeypatch.setattr(_installer, "_windows_file_version", lambda _path: "12.0.1")
 
 
 def test_install_defaults_to_a_non_mutating_json_plan(tmp_path, monkeypatch, capsys):
@@ -124,38 +130,64 @@ def test_verify_proves_direct_usability_with_host_ping(tmp_path, monkeypatch, ca
     monkeypatch.setenv("DCC_MCP_SUBSTANCE3D_PAINTER_PROFILE", str(profile))
     monkeypatch.setenv("DCC_MCP_SUBSTANCE3D_PAINTER_VERSION", "12.0.1")
     monkeypatch.setenv("DCC_MCP_REGISTRY_DIR", str(tmp_path / "registry"))
-    monkeypatch.setenv("DCC_MCP_LOG_DIR", str(tmp_path / "logs"))
-    monkeypatch.setenv("DCC_MCP_DISABLE_FILE_LOGGING", "1")
-    monkeypatch.setenv("DCC_MCP_DISABLE_JOB_PERSISTENCE", "1")
-    monkeypatch.setenv("DCC_MCP_DISABLE_TELEMETRY", "1")
-    monkeypatch.setitem(sys.modules, "substance_painter", types.SimpleNamespace(version="12.0.1"))
+    import dcc_mcp_core
 
-    from dcc_mcp_substance3d_painter.dispatcher import PainterQtDispatcher
+    import dcc_mcp_substance3d_painter as adapter
+    from dcc_mcp_substance3d_painter import _installer
     from dcc_mcp_substance3d_painter.install_cli import main
-    from dcc_mcp_substance3d_painter.server import SubstancePainterMcpServer
 
-    server = SubstancePainterMcpServer(PainterQtDispatcher(), port=0)
-    server.register_builtin_actions()
-    server.start(install_atexit_hook=False)
-    try:
-        common = ["--dcc-path", str(host), "--python", sys.executable, "--json"]
-        install_exit = main(["install", *common, "--yes"])
-        installed = json.loads(capsys.readouterr().out)
-        assert install_exit == 0, json.dumps(installed, indent=2)
-        assert installed["verify"] == {
-            "directly_usable": True,
-            "failure_stage": None,
-            "failure_reason": None,
-            "probe_tool": "painter_diagnostics__ping",
-        }
+    pid = 4242
+    start_identity = "synthetic-start-4242"
+    entry = {
+        "dcc_type": "substance3d_painter",
+        "mcp_url": "http://127.0.0.1:18812/mcp",
+        "instance_id": "painter-4242",
+        "adapter_version": adapter.__version__,
+        "metadata": {"dcc_pid": pid, "dcc_version": "12.0.1"},
+    }
+    monkeypatch.setattr(_installer, "query_runtime_state", lambda *_args, **_kwargs: {"entries": [entry]})
+    monkeypatch.setattr(
+        _installer,
+        "_observe_process_identity",
+        lambda _pid: {"pid": pid, "executable": str(host.resolve()), "start_identity": start_identity},
+    )
+    monkeypatch.setattr(
+        _installer,
+        "_probe_runtime_tool",
+        lambda *_args, **_kwargs: {
+            "success": True,
+            "result": {
+                "structuredContent": {
+                    "success": True,
+                    "context": {
+                        "host_dispatch_ready": True,
+                        "host": "substance3d_painter",
+                        "host_pid": pid,
+                        "host_executable": str(host.resolve()),
+                        "process_start_identity": start_identity,
+                        "adapter_version": adapter.__version__,
+                        "core_version": dcc_mcp_core.__version__,
+                        "adapter_module_path": str(Path(adapter.__file__).resolve()),
+                        "core_module_path": str(Path(dcc_mcp_core.__file__).resolve()),
+                        "bootstrap_module_path": str(
+                            profile / "python" / "modules" / "dcc_mcp_substance3d_painter_bootstrap" / "__init__.py"
+                        ),
+                    },
+                }
+            },
+        },
+    )
+    common = ["--dcc-path", str(host), "--python", sys.executable, "--json"]
+    install_exit = main(["install", *common, "--yes"])
+    installed = json.loads(capsys.readouterr().out)
+    assert install_exit == 0, json.dumps(installed, indent=2)
+    assert installed["verify"]["directly_usable"] is True
 
-        verify_exit = main(["verify", *common])
-        verified = json.loads(capsys.readouterr().out)
-        assert verify_exit == 0
-        assert verified["verify"]["directly_usable"] is True
-        assert verified["verify"]["probe_tool"] == "painter_diagnostics__ping"
-    finally:
-        server.stop()
+    verify_exit = main(["verify", *common])
+    verified = json.loads(capsys.readouterr().out)
+    assert verify_exit == 0
+    assert verified["verify"]["directly_usable"] is True
+    assert verified["verify"]["probe_tool"] == "painter_diagnostics__ping"
 
 
 def test_packaged_startup_hook_captures_bootstrap_errors():
@@ -209,7 +241,7 @@ def test_distribution_exposes_the_standard_lifecycle_entry_point():
 
     assert "[project.scripts]" in pyproject
     assert 'dcc-mcp-substance3d-painter = "dcc_mcp_substance3d_painter.install_cli:main"' in pyproject
-    assert "dcc-mcp-core>=0.20.8,<1.0.0" in pyproject
+    assert "dcc-mcp-core>=0.20.15,<1.0.0" in pyproject
 
 
 def test_install_runbook_covers_the_standard_lifecycle_and_all_platforms():
@@ -236,8 +268,13 @@ def test_install_runbook_covers_the_standard_lifecycle_and_all_platforms():
 def test_preflight_detects_a_versioned_painter_executable_without_an_environment_override(
     tmp_path, monkeypatch, capsys
 ):
-    host = tmp_path / "Adobe Substance 3D Painter 12.0.1.exe"
+    host = tmp_path / "Adobe Substance 3D Painter 12.0.1" / "Adobe Substance 3D Painter.exe"
+    host.parent.mkdir()
     host.write_bytes(b"synthetic host")
+    monkeypatch.setattr(
+        "dcc_mcp_substance3d_painter._installer._windows_file_version",
+        lambda _path: None,
+    )
     monkeypatch.delenv("DCC_MCP_SUBSTANCE3D_PAINTER_VERSION", raising=False)
     monkeypatch.setenv("DCC_MCP_SUBSTANCE3D_PAINTER_PROFILE", str(tmp_path / "profile"))
 
@@ -336,7 +373,12 @@ def test_readiness_probe_rejects_a_non_loopback_registry_url(monkeypatch):
         raise AssertionError("external URL must be rejected before transport")
 
     monkeypatch.setattr(_installer, "probe_sidecar_tool", must_not_probe)
-    result = _installer._probe_runtime_tool("https://example.com/mcp", 0.1)
-
-    assert result["success"] is False
-    assert result["status"] == "probe_unsafe_url"
+    for url in (
+        "https://example.com/mcp",
+        "http://user:secret@127.0.0.1:18812/mcp",
+        "http://127.0.0.1:18812/mcp?token=secret",
+        "http://localhost:18812/mcp",
+    ):
+        result = _installer._probe_runtime_tool(url, 0.1)
+        assert result["success"] is False
+        assert result["status"] == "probe_unsafe_url"

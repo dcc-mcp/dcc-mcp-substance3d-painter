@@ -7,7 +7,7 @@ from dcc_mcp_substance3d_painter.__version__ import __version__
 _CAPTURE = {
     "dcc_name": "substance3d_painter",
     "adapter_version": __version__,
-    "min_core_version": "0.20.8",
+    "min_core_version": "0.20.15",
 }
 
 with capture_bootstrap_errors(phase="import", **_CAPTURE):
