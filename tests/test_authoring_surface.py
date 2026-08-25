@@ -271,6 +271,35 @@ def _install_smart_mask_host(
     return layerstack, resource, identifier, target
 
 
+def _install_export_failure_host(monkeypatch, *, result=None, error: Exception | None = None) -> dict[str, object]:
+    assert (result is None) != (error is None)
+    stack = _Stack("Body")
+    texture_set = SimpleNamespace(
+        name=lambda: "Body",
+        all_stacks=lambda: [stack],
+        get_resolution=lambda: SimpleNamespace(width=2, height=2),
+        has_uv_tiles=lambda: False,
+    )
+    project = ModuleType("substance_painter.project")
+    project.is_open = MagicMock(return_value=True)
+    textureset = ModuleType("substance_painter.textureset")
+    textureset.all_texture_sets = MagicMock(return_value=[texture_set])
+    export = ModuleType("substance_painter.export")
+    export.export_project_textures = (
+        MagicMock(side_effect=error) if error is not None else MagicMock(return_value=result)
+    )
+    _install(monkeypatch, project=project, textureset=textureset, export=export)
+    return _load("create_export_preset").main(
+        name="benchmark-pbr",
+        maps=[
+            {
+                "file_name": "$textureSet_BaseColor",
+                "channels": [{"destination": "RGB", "source_channel": "RGB", "source_map": "baseColor"}],
+            }
+        ],
+    )["context"]["preset"]
+
+
 def test_smart_mask_validates_resource_and_reads_back_inserted_effects(monkeypatch) -> None:
     effect = MagicMock()
     effect.uid.return_value = 101
@@ -327,6 +356,38 @@ def test_smart_mask_reports_partial_readback_and_unconfirmed_cleanup(monkeypatch
     assert "rollback" not in str(result).lower()
 
 
+def test_smart_mask_cleanup_oserror_preserves_the_original_failure(monkeypatch) -> None:
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
+    target.remove_mask.side_effect = OSError("P:/private/project.spp SECRET_CLEANUP_TOKEN")
+
+    result = _load("add_mask").main(
+        layer_uid=88,
+        kind="smart",
+        resource_url="resource://starter_assets/edge-wear",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "HOST_SMART_MASK_INSERT_EMPTY"
+    assert result["context"]["cleanup"] == {"attempted": True, "status": "unconfirmed"}
+    assert "private" not in str(result).lower()
+    assert "secret_cleanup_token" not in str(result).lower()
+
+
+def test_smart_mask_cleanup_leaves_base_exceptions_to_the_skill_boundary(monkeypatch) -> None:
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
+    target.remove_mask.side_effect = KeyboardInterrupt()
+
+    result = _load("add_mask").main(
+        layer_uid=88,
+        kind="smart",
+        resource_url="resource://starter_assets/edge-wear",
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "interrupted"
+    assert result["_meta"]["dcc.error"]["type"] == "KeyboardInterrupt"
+
+
 def test_mask_host_errors_cannot_inject_public_error_codes(monkeypatch) -> None:
     _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
     target.add_mask.side_effect = RuntimeError("HOST_SECRET_TOKEN")
@@ -336,6 +397,25 @@ def test_mask_host_errors_cannot_inject_public_error_codes(monkeypatch) -> None:
     assert result["success"] is False
     assert result["error"] == "PAINTER_MASK_OPERATION_FAILED"
     assert "secret" not in str(result).lower()
+
+
+def test_mask_hostile_exception_args_cannot_escape_error_rendering(monkeypatch) -> None:
+    class HostileRuntimeError(RuntimeError):
+        def __getattribute__(self, name: str):
+            if name == "args":
+                raise OSError("P:/private/project.spp SECRET_ARGS_TOKEN")
+            return super().__getattribute__(name)
+
+    _layerstack, _resource, _identifier, target = _install_smart_mask_host(monkeypatch, [])
+    target.add_mask.side_effect = HostileRuntimeError("HOST_READBACK_MASK_MISSING")
+
+    result = _load("add_mask").main(layer_uid=88, kind="black")
+
+    assert result["success"] is False
+    assert result["error"] == "PAINTER_MASK_OPERATION_FAILED"
+    assert result["context"]["cleanup"] == {"attempted": False, "status": "not_needed"}
+    assert "private" not in str(result).lower()
+    assert "secret_args_token" not in str(result).lower()
 
 
 def test_import_resource_is_bounded_and_requires_resource_catalog_readback(monkeypatch, tmp_path) -> None:
@@ -666,6 +746,41 @@ def test_selective_export_verifies_files_and_png_resolution(monkeypatch, tmp_pat
     )
     assert failed["success"] is False
     assert "resolution" in failed["error"].lower()
+
+
+def test_export_host_oserror_cannot_leak_paths_or_tokens(monkeypatch, tmp_path) -> None:
+    preset = _install_export_failure_host(
+        monkeypatch,
+        error=OSError("P:/private/export SECRET_EXPORT_TOKEN\nTraceback: host detail"),
+    )
+
+    result = _load("export_textures").main(export_path=str(tmp_path / "textures"), preset=preset)
+
+    assert result["success"] is False
+    assert result["error"] == "PAINTER_TEXTURE_EXPORT_FAILED"
+    assert "private" not in str(result).lower()
+    assert "secret_export_token" not in str(result).lower()
+    assert "traceback" not in str(result).lower()
+
+
+def test_export_host_status_and_message_cannot_become_public_details(monkeypatch, tmp_path) -> None:
+    preset = _install_export_failure_host(
+        monkeypatch,
+        result=SimpleNamespace(
+            status=SimpleNamespace(name="Failed SECRET_STATUS_TOKEN"),
+            message="P:/private/export SECRET_MESSAGE_TOKEN\nTraceback: host detail",
+            textures={},
+        ),
+    )
+
+    result = _load("export_textures").main(export_path=str(tmp_path / "textures"), preset=preset)
+
+    assert result["success"] is False
+    assert result["error"] == "HOST_EXPORT_FAILED"
+    assert "private" not in str(result).lower()
+    assert "secret_status_token" not in str(result).lower()
+    assert "secret_message_token" not in str(result).lower()
+    assert "traceback" not in str(result).lower()
 
 
 def test_inspect_project_returns_diffable_texture_and_layer_state(monkeypatch) -> None:

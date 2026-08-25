@@ -12,16 +12,37 @@ from dcc_mcp_substance3d_painter.export_contract import validate_export_preset
 from dcc_mcp_substance3d_painter.painter_state import stack_root_path
 
 _PADDING = {"infinite", "dilation", "passthrough"}
+_HOST_ERROR_CODES = {
+    "HOST_EXPORT_FAILED",
+    "HOST_READBACK_EXPORT_DUPLICATE_PATH",
+    "HOST_READBACK_EXPORT_EMPTY",
+    "HOST_READBACK_EXPORT_MISSING",
+    "HOST_READBACK_EXPORT_OUTSIDE_TARGET",
+    "HOST_READBACK_PNG_INVALID",
+    "HOST_READBACK_RESOLUTION_MISMATCH",
+    "HOST_READBACK_TEXTURE_SET_UNKNOWN",
+}
+
+
+def _error_code(exc: Exception) -> str:
+    try:
+        args = exc.args
+        detail = args[0] if isinstance(args, tuple) and len(args) == 1 and isinstance(args[0], str) else None
+    except Exception:
+        return "PAINTER_TEXTURE_EXPORT_FAILED"
+    if detail in _HOST_ERROR_CODES:
+        return detail
+    return "PAINTER_TEXTURE_EXPORT_FAILED"
 
 
 def _png_size(path: Path) -> tuple[int, int]:
     with path.open("rb") as stream:
         header = stream.read(24)
     if len(header) != 24 or header[:8] != b"\x89PNG\r\n\x1a\n" or header[12:16] != b"IHDR":
-        raise ValueError(f"Exported file is not a readable PNG: {path.name}")
+        raise RuntimeError("HOST_READBACK_PNG_INVALID")
     width, height = struct.unpack(">II", header[16:24])
     if width < 1 or height < 1:
-        raise ValueError(f"Exported PNG has an invalid resolution: {path.name}")
+        raise RuntimeError("HOST_READBACK_PNG_INVALID")
     return width, height
 
 
@@ -91,9 +112,9 @@ def main(
             "exportParameters": [{"parameters": {"paddingAlgorithm": padding}}],
         }
         result = export.export_project_textures(config)
-        status = str(getattr(result.status, "name", result.status))
+        status = getattr(result.status, "name", result.status)
         if status != "Success":
-            raise RuntimeError(f"Painter export ended with status {status}: {result.message}")
+            raise RuntimeError("HOST_EXPORT_FAILED")
         exported = _exported_records(result)
         if not exported:
             raise RuntimeError("HOST_READBACK_EXPORT_EMPTY")
@@ -106,23 +127,20 @@ def main(
             except ValueError as exc:
                 raise RuntimeError("HOST_READBACK_EXPORT_OUTSIDE_TARGET") from exc
             if not path.is_file():
-                raise RuntimeError(f"HOST_READBACK_EXPORT_MISSING: {path.name}")
+                raise RuntimeError("HOST_READBACK_EXPORT_MISSING")
             width = height = None
             if inline_preset is not None:
                 if texture_set_name not in expected_resolutions:
                     if len(selected) != 1:
-                        raise RuntimeError(f"HOST_READBACK_TEXTURE_SET_UNKNOWN: {texture_set_name!r}")
+                        raise RuntimeError("HOST_READBACK_TEXTURE_SET_UNKNOWN")
                     texture_set_name = selected_names[0]
                 width, height = _png_size(path)
                 allowed_resolutions = expected_resolutions[texture_set_name]
                 if (width, height) not in allowed_resolutions:
-                    raise RuntimeError(
-                        f"HOST_READBACK_RESOLUTION_MISMATCH: {path.name} is {width}x{height}; "
-                        f"expected one of {sorted(allowed_resolutions)}"
-                    )
+                    raise RuntimeError("HOST_READBACK_RESOLUTION_MISMATCH")
             verified.append({"path": str(path), "width": width, "height": height})
     except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
-        return skill_error("Painter texture export verification failed", str(exc))
+        return skill_error("Painter texture export verification failed", _error_code(exc))
     return skill_success(
         "Exported and verified Painter textures",
         export_path=str(output),

@@ -27,13 +27,17 @@ def _cleanup_added_mask(layerstack, target, layer_uid: int, target_stack) -> dic
         readback = find_node(layerstack, layer_uid, target_stack)
         if readback is not None and not bool(readback.has_mask()):
             cleanup["status"] = "confirmed"
-    except (AttributeError, RuntimeError, TypeError, ValueError):
+    except Exception:
         pass
     return cleanup
 
 
 def _error_code(exc: Exception) -> str:
-    detail = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else None
+    try:
+        args = exc.args
+        detail = args[0] if isinstance(args, tuple) and len(args) == 1 and isinstance(args[0], str) else None
+    except Exception:
+        return "PAINTER_MASK_OPERATION_FAILED"
     if detail in _HOST_ERROR_CODES:
         return detail
     return "PAINTER_MASK_OPERATION_FAILED"
