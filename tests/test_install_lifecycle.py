@@ -13,6 +13,8 @@ def _synthetic_painter_file_metadata(monkeypatch):
     from dcc_mcp_substance3d_painter import _installer
 
     monkeypatch.setattr(_installer, "_windows_file_version", lambda _path: "12.0.1")
+    monkeypatch.setattr(_installer, "_host_product_identity", lambda _path: True)
+    monkeypatch.setattr(_installer, "_endpoint_is_owned_by_process", lambda _url, _pid: True)
 
 
 def test_install_defaults_to_a_non_mutating_json_plan(tmp_path, monkeypatch, capsys):

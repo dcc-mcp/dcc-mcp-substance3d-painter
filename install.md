@@ -23,11 +23,11 @@ python -m pip install --upgrade dcc-mcp-substance3d-painter
 ## Supported versions
 
 Windows, macOS, and Linux are supported. The lifecycle command checks the
-Painter 7.2 floor before changing the profile. It reads Windows executable
-metadata, a macOS app bundle's `Info.plist`, or a version embedded in the
-selected path. If installed metadata is unavailable, set
-the exact Painter executable with `--dcc-path`; unverified version overrides are
-not accepted.
+Painter 7.2 floor before changing the profile. It requires Adobe Painter
+product metadata on Windows, an Adobe Painter app-bundle identity on macOS, or
+the standard Adobe install identity on Linux. It then reads the platform
+version metadata or a version embedded in that verified install path. A renamed
+or exact-name binary without the platform product identity is rejected.
 
 Default user resource profile on all three platforms:
 
@@ -85,9 +85,12 @@ dcc-mcp-substance3d-painter verify --dcc-path "/absolute/path/to/Painter" --pyth
 ```
 
 Verification checks the receipt and SHA-256 digests, imports the adapter and
-Core from their recorded installed distributions, checks bootstrap error logs,
-finds one live Painter runtime, independently captures its PID, executable and
-start identity before and after the probe, and calls the read-only
+Core from distributions rooted in the selected interpreter's trusted install
+schemes (including RECORD integrity or an exact editable origin), checks
+bootstrap error logs, finds one live Painter runtime, and requires its exact
+loopback listener to be owned by the independently observed Painter PID. It
+recaptures the registry instance, endpoint ownership, executable, and start
+identity around the same read-only
 `painter_diagnostics__ping` tool through the existing main-thread bridge. The
 probe must report the exact receipted plugin/module origins before readiness is
 reported.

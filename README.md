@@ -63,8 +63,9 @@ manual environment path.
 The lifecycle uses the released Core 0.20.15 Install SOP contract. Readiness is
 fail-closed unless the registry, independently observed process identity, and
 in-host diagnostics all bind the same Painter executable, start identity,
-adapter payload, and receipt. CI uses hermetic identity/probe fixtures; it does
-not claim to validate a real Adobe Painter launch.
+process-owned loopback listener, adapter payload, and receipt. CI uses hermetic
+identity/probe fixtures; it does not claim to validate a real Adobe Painter
+launch.
 
 Set `DCC_MCP_SUBSTANCE3D_PAINTER_PORT` before launching Painter only when a
 fixed port is required; `0` keeps automatic allocation. Standard
