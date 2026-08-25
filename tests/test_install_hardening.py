@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import shutil
@@ -68,6 +70,7 @@ def _runtime_probe_context(ctx: _installer.InstallContext, *, start_identity: st
             "host_executable": str(ctx.host_path),
             "adapter_version": _installer.__version__,
             "core_version": _installer.MIN_CORE_VERSION,
+            "bootstrap_module_path": str(ctx.bootstrap_path),
         },
     }
 
@@ -90,6 +93,12 @@ def _patch_verify_prerequisites(
                 }
             ]
         },
+    )
+    monkeypatch.setattr(
+        _installer,
+        "_endpoint_is_owned_by_process",
+        lambda _url, _pid: True,
+        raising=False,
     )
     monkeypatch.setattr(
         _installer,
@@ -181,6 +190,114 @@ def test_python_probe_rejects_shadow_modules_not_owned_by_distributions(
 
     with pytest.raises(_installer.LifecycleFailure, match="ownership|RECORD|shadow"):
         _installer._query_python(Path(sys.executable).resolve())
+
+
+def test_python_probe_rejects_self_consistent_distributions_outside_trusted_schemes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trusted = tmp_path / "venv" / "site-packages"
+    trusted.mkdir(parents=True)
+    hostile = tmp_path / "hostile-pythonpath"
+    adapter_file = hostile / "dcc_mcp_substance3d_painter" / "__init__.py"
+    core_file = hostile / "dcc_mcp_core" / "__init__.py"
+    for path in (adapter_file, core_file):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# self-consistent hostile package\n", encoding="utf-8")
+    payload = {
+        "python_version": "{}.{}.{}".format(*sys.version_info[:3]),
+        "python_root": str(trusted),
+        "python_platlib": str(trusted),
+        "executable": str(Path(sys.executable).resolve()),
+        "adapter_version": _installer.__version__,
+        "adapter_dist_version": _installer.__version__,
+        "core_version": _installer.MIN_CORE_VERSION,
+        "core_dist_version": _installer.MIN_CORE_VERSION,
+        "adapter_file": str(adapter_file),
+        "core_file": str(core_file),
+        "adapter_dist_root": str(hostile),
+        "core_dist_root": str(hostile),
+        "adapter_record": "dcc_mcp_substance3d_painter/__init__.py",
+        "core_record": "dcc_mcp_core/__init__.py",
+        "adapter_record_hash": None,
+        "core_record_hash": None,
+        "adapter_record_size": adapter_file.stat().st_size,
+        "core_record_size": core_file.stat().st_size,
+        "adapter_direct_url": None,
+        "core_direct_url": None,
+    }
+    monkeypatch.setattr(
+        _installer,
+        "_run_bounded_command",
+        lambda *_args, **_kwargs: {"success": True, "stdout": json.dumps(payload), "stderr": ""},
+    )
+
+    with pytest.raises(_installer.LifecycleFailure, match="trusted|scheme|distribution"):
+        _installer._query_python(Path(sys.executable).resolve())
+
+
+def test_distribution_record_digest_must_match_the_imported_module(tmp_path: Path) -> None:
+    trusted = tmp_path / "site-packages"
+    module = trusted / "dcc_mcp_core" / "__init__.py"
+    module.parent.mkdir(parents=True)
+    module.write_text("__version__ = '0.20.15'\n", encoding="utf-8")
+    original = module.read_bytes()
+    digest = base64.urlsafe_b64encode(hashlib.sha256(original).digest()).rstrip(b"=").decode("ascii")
+    module.write_text("__version__ = 'tampered'\n", encoding="utf-8")
+
+    with pytest.raises(_installer.LifecycleFailure, match="RECORD integrity"):
+        _installer._require_distribution_origin(
+            module,
+            trusted,
+            "dcc_mcp_core/__init__.py",
+            f"sha256={digest}",
+            len(original),
+            None,
+            trusted_roots=[trusted],
+            distribution="Core",
+            package="dcc_mcp_core",
+        )
+
+
+def test_exact_named_renamed_binary_is_not_a_painter_install(tmp_path: Path) -> None:
+    impostor = tmp_path / "Adobe Substance 3D Painter 12.0.1" / "Adobe Substance 3D Painter.exe"
+    impostor.parent.mkdir(parents=True)
+    impostor.write_bytes(b"renamed arbitrary executable")
+
+    with pytest.raises(_installer.LifecycleFailure, match="vendor|product|install identity"):
+        _installer._resolve_host_path(str(impostor), {})
+
+
+def test_receipt_replace_failure_leaves_no_atomic_temporary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    receipt = tmp_path / "receipts" / "substance3d_painter.json"
+    original_replace = os.replace
+
+    def fail_receipt_replace(source, destination):
+        if Path(destination) == receipt:
+            raise PermissionError("injected receipt replace failure")
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_receipt_replace)
+    with pytest.raises(PermissionError):
+        _installer._write_json_atomic(receipt, {"schema_version": 1})
+
+    assert not list(receipt.parent.glob(f".{receipt.name}.*.tmp"))
+
+
+def test_receipt_temporary_cleanup_failure_is_operator_visible(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    receipt = tmp_path / "receipts" / "substance3d_painter.json"
+    monkeypatch.setattr(os, "replace", lambda *_args: (_ for _ in ()).throw(PermissionError("replace failed")))
+    original_unlink = Path.unlink
+
+    def fail_temporary_cleanup(path: Path, *args, **kwargs):
+        if path.name.startswith(f".{receipt.name}."):
+            raise PermissionError("cleanup failed")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_temporary_cleanup)
+    with pytest.raises(_installer.LifecycleFailure) as raised:
+        _installer._write_json_atomic(receipt, {"schema_version": 1})
+
+    assert raised.value.stage == "receipt_cleanup"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -444,6 +561,110 @@ def test_verify_rejects_pid_reuse_between_probe_and_commit(tmp_path: Path, monke
         ]
     )
     monkeypatch.setattr(_installer, "_observe_process_identity", lambda _pid: next(identities), raising=False)
+
+    verify, _next_steps = _installer._verify(ctx, {})
+
+    assert verify["directly_usable"] is False
+    assert verify["failure_stage"] == "readiness_identity"
+
+
+def test_verify_rejects_foreign_listener_claiming_the_observed_painter_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _context(tmp_path)
+    _write_current_install(ctx)
+    probe = _runtime_probe_context(ctx)
+    _patch_verify_prerequisites(monkeypatch, ctx, probe)
+    monkeypatch.setattr(
+        _installer,
+        "_observe_process_identity",
+        lambda _pid: {"pid": 123, "executable": str(ctx.host_path), "start_identity": "start-123"},
+    )
+    monkeypatch.setattr(
+        _installer,
+        "_endpoint_is_owned_by_process",
+        lambda _url, _pid: False,
+        raising=False,
+    )
+
+    verify, _next_steps = _installer._verify(ctx, {})
+
+    assert verify["directly_usable"] is False
+    assert verify["failure_stage"] == "readiness_identity"
+
+
+def test_loopback_listener_ownership_is_bound_to_the_real_listener_pid(tmp_path: Path) -> None:
+    ready = tmp_path / "listener.json"
+    script = (
+        "import json,os,pathlib,socket,sys,time; "
+        "s=socket.socket(); s.bind(('127.0.0.1',0)); s.listen(); "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({'pid':os.getpid(),'port':s.getsockname()[1]})); "
+        "time.sleep(30)"
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(ready)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        while not ready.is_file() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.is_file()
+        identity = json.loads(ready.read_text(encoding="utf-8"))
+        url = f"http://127.0.0.1:{identity['port']}/mcp"
+        assert _installer._endpoint_is_owned_by_process(url, identity["pid"]) is True
+        assert _installer._endpoint_is_owned_by_process(url, os.getpid()) is False
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2.0)
+
+
+def test_verify_rejects_listener_mutation_after_the_same_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _context(tmp_path)
+    _write_current_install(ctx)
+    probe = _runtime_probe_context(ctx)
+    _patch_verify_prerequisites(monkeypatch, ctx, probe)
+    ownership = iter([True, False])
+    monkeypatch.setattr(_installer, "_endpoint_is_owned_by_process", lambda _url, _pid: next(ownership))
+    monkeypatch.setattr(
+        _installer,
+        "_observe_process_identity",
+        lambda _pid: {"pid": 123, "executable": str(ctx.host_path), "start_identity": "start-123"},
+    )
+
+    verify, _next_steps = _installer._verify(ctx, {})
+
+    assert verify["directly_usable"] is False
+    assert verify["failure_stage"] == "readiness_identity"
+
+
+def test_verify_rejects_registry_mutation_after_the_same_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = _context(tmp_path)
+    _write_current_install(ctx)
+    probe = _runtime_probe_context(ctx)
+    _patch_verify_prerequisites(monkeypatch, ctx, probe)
+    entry = {
+        "dcc_type": "substance3d_painter",
+        "mcp_url": "http://127.0.0.1:18812/mcp",
+        "instance_id": "painter-123",
+        "adapter_version": _installer.__version__,
+        "metadata": {"dcc_pid": 123, "dcc_version": "12.0.1"},
+    }
+    mutated = {**entry, "instance_id": "foreign-instance"}
+    states = iter([{"entries": [entry]}, {"entries": [mutated]}])
+    monkeypatch.setattr(_installer, "query_runtime_state", lambda *_args, **_kwargs: next(states))
+    monkeypatch.setattr(
+        _installer,
+        "_observe_process_identity",
+        lambda _pid: {"pid": 123, "executable": str(ctx.host_path), "start_identity": "start-123"},
+    )
 
     verify, _next_steps = _installer._verify(ctx, {})
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import ipaddress
 import json
@@ -9,6 +10,7 @@ import os
 import plistlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -53,6 +55,7 @@ _BOOTSTRAP_PACKAGE = "dcc_mcp_substance3d_painter_bootstrap"
 _READINESS_TOOL = "painter_diagnostics__ping"
 _MAX_PROBE_OUTPUT_BYTES = 256 * 1024
 _MAX_RECEIPT_BYTES = 256 * 1024
+_MAX_MODULE_BYTES = 4 * 1024 * 1024
 _MAX_VERSION_LENGTH = 32
 _VERSION_COMPONENT_RE = re.compile(r"(?:0|[1-9][0-9]{0,5})")
 _HOST_EXECUTABLES = {
@@ -186,6 +189,9 @@ class _ProcessTreeOwner:
     def close(self) -> None:
         return None
 
+    def wait_empty(self, timeout: float) -> bool:
+        return True
+
 
 class _PosixProcessTreeOwner(_ProcessTreeOwner):
     def __init__(self, process: subprocess.Popen[bytes]) -> None:
@@ -199,8 +205,22 @@ class _PosixProcessTreeOwner(_ProcessTreeOwner):
         if self._process.poll() is None:
             os.killpg(self._process.pid, 9)
 
+    def wait_empty(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                os.killpg(self._process.pid, 0)
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
 
 class _WindowsProcessTreeOwner(_ProcessTreeOwner):
+    _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1
     _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
     _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
     _THREAD_SUSPEND_RESUME = 0x0002
@@ -243,6 +263,18 @@ class _WindowsProcessTreeOwner(_ProcessTreeOwner):
                 ("PeakJobMemoryUsed", ctypes.c_size_t),
             ]
 
+        class _BasicAccountingInformation(ctypes.Structure):
+            _fields_ = [
+                ("TotalUserTime", ctypes.c_int64),
+                ("TotalKernelTime", ctypes.c_int64),
+                ("ThisPeriodTotalUserTime", ctypes.c_int64),
+                ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                ("TotalPageFaultCount", wintypes.DWORD),
+                ("TotalProcesses", wintypes.DWORD),
+                ("ActiveProcesses", wintypes.DWORD),
+                ("TotalTerminatedProcesses", wintypes.DWORD),
+            ]
+
         self._ctypes = ctypes
         self._kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self._kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
@@ -258,12 +290,21 @@ class _WindowsProcessTreeOwner(_ProcessTreeOwner):
         self._kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
         self._kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         self._kernel32.TerminateJobObject.restype = wintypes.BOOL
+        self._kernel32.QueryInformationJobObject.argtypes = [
+            wintypes.HANDLE,
+            ctypes.c_int,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD),
+        ]
+        self._kernel32.QueryInformationJobObject.restype = wintypes.BOOL
         self._kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self._kernel32.CloseHandle.restype = wintypes.BOOL
         handle = self._kernel32.CreateJobObjectW(None, None)
         if not handle:
             raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
         self._handle = handle
+        self._accounting_type = _BasicAccountingInformation
         limits = _ExtendedLimitInformation()
         limits.BasicLimitInformation.LimitFlags = self._JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         if not self._kernel32.SetInformationJobObject(
@@ -284,6 +325,25 @@ class _WindowsProcessTreeOwner(_ProcessTreeOwner):
     def terminate(self) -> None:
         if self._handle and not self._kernel32.TerminateJobObject(self._handle, 1):
             raise OSError(self._ctypes.get_last_error(), "TerminateJobObject failed")
+
+    def wait_empty(self, timeout: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while self._handle:
+            accounting = self._accounting_type()
+            if not self._kernel32.QueryInformationJobObject(
+                self._handle,
+                self._JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+                self._ctypes.byref(accounting),
+                self._ctypes.sizeof(accounting),
+                None,
+            ):
+                return False
+            if accounting.ActiveProcesses == 0:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+        return True
 
     def close(self) -> None:
         if self._handle:
@@ -395,6 +455,7 @@ def _cleanup_owned_process(process: subprocess.Popen[bytes], owner: _ProcessTree
         except (OSError, subprocess.TimeoutExpired):
             pass
     finally:
+        owner.wait_empty(3.0)
         owner.close()
 
 
@@ -483,8 +544,23 @@ def _load_json(path: Path) -> Dict[str, Any]:
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(str(temporary), str(path))
+    primary: BaseException | None = None
+    try:
+        temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(str(temporary), str(path))
+    except BaseException as exc:
+        primary = exc
+    if temporary.exists():
+        try:
+            temporary.unlink()
+        except OSError as cleanup_error:
+            raise LifecycleFailure(
+                "receipt_cleanup",
+                "Painter receipt transaction cleanup failed.",
+                INSTALL_EXIT_INSTALL,
+            ) from cleanup_error
+    if primary is not None:
+        raise primary
 
 
 def _query_python(python_path: Path) -> Dict[str, str]:
@@ -499,15 +575,26 @@ import dcc_mcp_substance3d_painter as adapter
 
 ad = md.distribution("dcc-mcp-substance3d-painter")
 co = md.distribution("dcc-mcp-core")
-af = {str(pathlib.Path(ad.locate_file(item)).resolve()): str(item) for item in tuple(ad.files or ())}
-cf = {str(pathlib.Path(co.locate_file(item)).resolve()): str(item) for item in tuple(co.files or ())}
+
+def owner(distribution, target):
+    for item in tuple(distribution.files or ()):
+        if pathlib.Path(distribution.locate_file(item)).resolve() != target:
+            continue
+        digest = None if item.hash is None else item.hash.mode + "=" + item.hash.value
+        return str(item), digest, item.size
+    return None, None, None
+
 ap = str(pathlib.Path(adapter.__file__).resolve())
 cp = str(pathlib.Path(dcc_mcp_core.__file__).resolve())
+ar, ah, az = owner(ad, pathlib.Path(ap))
+cr, ch, cz = owner(co, pathlib.Path(cp))
 au = ad.read_text("direct_url.json")
 cu = co.read_text("direct_url.json")
+paths = sysconfig.get_paths()
 print(json.dumps({
     "python_version": ".".join(map(str, sys.version_info[:3])),
-    "python_root": sysconfig.get_path("purelib"),
+    "python_root": str(pathlib.Path(paths["purelib"]).resolve()),
+    "python_platlib": str(pathlib.Path(paths["platlib"]).resolve()),
     "executable": sys.executable,
     "core_version": dcc_mcp_core.__version__,
     "core_dist_version": co.version,
@@ -517,8 +604,12 @@ print(json.dumps({
     "core_file": cp,
     "adapter_dist_root": str(pathlib.Path(ad.locate_file("")).resolve()),
     "core_dist_root": str(pathlib.Path(co.locate_file("")).resolve()),
-    "adapter_record": af.get(ap),
-    "core_record": cf.get(cp),
+    "adapter_record": ar,
+    "core_record": cr,
+    "adapter_record_hash": ah,
+    "core_record_hash": ch,
+    "adapter_record_size": az,
+    "core_record_size": cz,
     "adapter_direct_url": json.loads(au) if au else None,
     "core_direct_url": json.loads(cu) if cu else None,
 }))
@@ -562,11 +653,21 @@ print(json.dumps({
         Path(str(result.get("adapter_file") or "")), "python", "Imported Painter adapter module"
     )
     core_file = _require_regular_file(Path(str(result.get("core_file") or "")), "python", "Imported Core module")
+    trusted_roots: list[Path] = []
+    for value in (result.get("python_root"), result.get("python_platlib")):
+        root = Path(str(value or ""))
+        if not root.is_dir() or _is_link_or_junction(root):
+            raise LifecycleFailure("python", "Target interpreter returned an invalid trusted install scheme.")
+        if not any(_same_path(root, existing) for existing in trusted_roots):
+            trusted_roots.append(root.resolve())
     _require_distribution_origin(
         adapter_file,
         result.get("adapter_dist_root"),
         result.get("adapter_record"),
+        result.get("adapter_record_hash"),
+        result.get("adapter_record_size"),
         result.get("adapter_direct_url"),
+        trusted_roots=trusted_roots,
         distribution="adapter",
         package="dcc_mcp_substance3d_painter",
     )
@@ -574,7 +675,10 @@ print(json.dumps({
         core_file,
         result.get("core_dist_root"),
         result.get("core_record"),
+        result.get("core_record_hash"),
+        result.get("core_record_size"),
         result.get("core_direct_url"),
+        trusted_roots=trusted_roots,
         distribution="Core",
         package="dcc_mcp_core",
     )
@@ -604,8 +708,11 @@ def _require_distribution_origin(
     module_file: Path,
     root_value: object,
     record_value: object,
+    record_hash: object,
+    record_size: object,
     direct_url: object,
     *,
+    trusted_roots: Sequence[Path],
     distribution: str,
     package: str,
 ) -> None:
@@ -615,6 +722,7 @@ def _require_distribution_origin(
         not root_text
         or not root.is_dir()
         or _is_link_or_junction(root)
+        or not any(_same_path(root, trusted) for trusted in trusted_roots)
         or module_file.name != "__init__.py"
         or module_file.parent.name != package
     ):
@@ -625,6 +733,21 @@ def _require_distribution_origin(
             raise LifecycleFailure("python", f"Imported {distribution} module has invalid RECORD ownership.")
         if not _same_path(root / record_path, module_file) or not _path_within(module_file, root):
             raise LifecycleFailure("python", f"Imported {distribution} module is not owned by its RECORD.")
+        if (
+            not isinstance(record_hash, str)
+            or not record_hash.startswith("sha256=")
+            or not isinstance(record_size, int)
+            or isinstance(record_size, bool)
+            or not 0 < record_size <= _MAX_MODULE_BYTES
+            or module_file.stat().st_size != record_size
+        ):
+            raise LifecycleFailure("python", f"Imported {distribution} module has invalid RECORD integrity.")
+        expected = record_hash.removeprefix("sha256=")
+        actual = (
+            base64.urlsafe_b64encode(hashlib.sha256(module_file.read_bytes()).digest()).rstrip(b"=").decode("ascii")
+        )
+        if not expected or actual != expected:
+            raise LifecycleFailure("python", f"Imported {distribution} module failed RECORD integrity.")
         return
     editable = _editable_distribution_root(direct_url)
     candidates = (
@@ -675,10 +798,20 @@ def _resolve_host_path(dcc_path: Optional[str], environ: Mapping[str, str]) -> P
         if candidate.name.lower() not in _HOST_EXECUTABLES:
             raise LifecycleFailure("host", "--dcc-path must select the exact Painter executable.")
         if candidate.is_file():
-            return _require_regular_file(candidate, "host", "Selected Painter executable")
+            selected = _require_regular_file(candidate, "host", "Selected Painter executable")
+            if not _host_product_identity(selected):
+                raise LifecycleFailure(
+                    "host",
+                    "Selected executable has no verified Adobe Painter product or install identity.",
+                )
+            return selected
         raise LifecycleFailure("host", "Painter executable does not exist.")
     candidates = _host_candidates(environ)
     if len(candidates) == 1:
+        if not _host_product_identity(candidates[0]):
+            raise LifecycleFailure(
+                "host", "Discovered executable has no verified Adobe Painter product or install identity."
+            )
         return candidates[0]
     if not candidates:
         raise LifecycleFailure("host", "Painter was not found in a standard install location; pass --dcc-path.")
@@ -730,6 +863,81 @@ def _windows_file_version(path: Path) -> Optional[str]:
         return ".".join(str(part) for part in parts)
     except (AttributeError, OSError, ValueError):
         return None
+
+
+def _windows_version_string(path: Path, field: str) -> Optional[str]:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        version = ctypes.windll.version
+        version.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
+        version.GetFileVersionInfoSizeW.restype = wintypes.DWORD
+        version.GetFileVersionInfoW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID]
+        version.GetFileVersionInfoW.restype = wintypes.BOOL
+        version.VerQueryValueW.argtypes = [
+            wintypes.LPVOID,
+            wintypes.LPCWSTR,
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.POINTER(wintypes.UINT),
+        ]
+        version.VerQueryValueW.restype = wintypes.BOOL
+        size = version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        data = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(str(path), 0, size, data):
+            return None
+        translation = ctypes.c_void_p()
+        translation_length = wintypes.UINT()
+        if (
+            not version.VerQueryValueW(
+                data,
+                "\\VarFileInfo\\Translation",
+                ctypes.byref(translation),
+                ctypes.byref(translation_length),
+            )
+            or translation_length.value < 4
+        ):
+            return None
+        language, codepage = ctypes.cast(translation, ctypes.POINTER(ctypes.c_ushort * 2)).contents
+        value = ctypes.c_void_p()
+        value_length = wintypes.UINT()
+        query = f"\\StringFileInfo\\{language:04x}{codepage:04x}\\{field}"
+        if not version.VerQueryValueW(data, query, ctypes.byref(value), ctypes.byref(value_length)):
+            return None
+        if not value.value or value_length.value <= 1:
+            return None
+        return ctypes.wstring_at(value.value, value_length.value - 1).strip()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _host_product_identity(path: Path) -> bool:
+    """Fail closed unless the executable has a platform-owned Painter identity."""
+    if os.name == "nt":
+        company = (_windows_version_string(path, "CompanyName") or "").casefold()
+        product = (_windows_version_string(path, "ProductName") or "").casefold()
+        return "adobe" in company and "substance" in product and "painter" in product
+    if sys.platform == "darwin":
+        if path.parent.name != "MacOS" or path.parent.parent.name != "Contents":
+            return False
+        try:
+            plist = plistlib.loads((path.parent.parent / "Info.plist").read_bytes())
+        except (OSError, ValueError):
+            return False
+        bundle_id = str(plist.get("CFBundleIdentifier") or "").casefold()
+        product = str(plist.get("CFBundleName") or plist.get("CFBundleDisplayName") or "").casefold()
+        return "adobe" in bundle_id and "substance" in bundle_id and "painter" in product
+    try:
+        relative = path.resolve(strict=True).relative_to(Path("/opt/Adobe/Adobe Substance 3D Painter"))
+        with path.open("rb") as stream:
+            magic = stream.read(4)
+    except (OSError, ValueError):
+        return False
+    return bool(relative.parts) and magic == b"\x7fELF"
 
 
 def _detect_host_version(path: Path, environ: Mapping[str, str]) -> Tuple[str, str]:
@@ -1199,6 +1407,97 @@ def _probe_runtime_tool(mcp_url: str, timeout_secs: float) -> Dict[str, Any]:
     return probe
 
 
+def _windows_endpoint_is_owned(address: str, port: int, pid: int) -> bool:
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class TcpRowOwnerPid(ctypes.Structure):
+            _fields_ = [
+                ("state", wintypes.DWORD),
+                ("local_address", wintypes.DWORD),
+                ("local_port", wintypes.DWORD),
+                ("remote_address", wintypes.DWORD),
+                ("remote_port", wintypes.DWORD),
+                ("owning_pid", wintypes.DWORD),
+            ]
+
+        iphlpapi = ctypes.WinDLL("iphlpapi", use_last_error=True)
+        size = wintypes.ULONG(0)
+        result = iphlpapi.GetExtendedTcpTable(None, ctypes.byref(size), False, socket.AF_INET, 3, 0)
+        if result not in {0, 122} or size.value <= ctypes.sizeof(wintypes.DWORD):
+            return False
+        buffer = ctypes.create_string_buffer(size.value)
+        if iphlpapi.GetExtendedTcpTable(buffer, ctypes.byref(size), False, socket.AF_INET, 3, 0) != 0:
+            return False
+        count = ctypes.cast(buffer, ctypes.POINTER(wintypes.DWORD)).contents.value
+        row_size = ctypes.sizeof(TcpRowOwnerPid)
+        offset = ctypes.sizeof(wintypes.DWORD)
+        for index in range(count):
+            row = TcpRowOwnerPid.from_buffer_copy(buffer, offset + index * row_size)
+            observed_address = socket.inet_ntoa(int(row.local_address).to_bytes(4, "little"))
+            observed_port = socket.ntohs(int(row.local_port) & 0xFFFF)
+            if row.state == 2 and observed_address == address and observed_port == port and row.owning_pid == pid:
+                return True
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return False
+    return False
+
+
+def _linux_endpoint_is_owned(address: str, port: int, pid: int) -> bool:
+    if ":" in address:
+        return False
+    expected_address = socket.inet_aton(address)[::-1].hex().upper()
+    inodes: set[str] = set()
+    try:
+        for line in Path("/proc/net/tcp").read_text(encoding="ascii").splitlines()[1:]:
+            fields = line.split()
+            local_address, local_port = fields[1].split(":")
+            if fields[3] == "0A" and local_address == expected_address and int(local_port, 16) == port:
+                inodes.add(fields[9])
+        if not inodes:
+            return False
+        for descriptor in Path(f"/proc/{pid}/fd").iterdir():
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            if target.startswith("socket:[") and target[8:-1] in inodes:
+                return True
+    except (IndexError, OSError, ValueError):
+        return False
+    return False
+
+
+def _endpoint_is_owned_by_process(mcp_url: str, pid: int) -> bool:
+    """Bind the exact loopback listener to the independently observed host PID."""
+    parsed = urllib.parse.urlparse(mcp_url)
+    try:
+        address = str(ipaddress.ip_address(parsed.hostname or ""))
+    except ValueError:
+        return False
+    if not ipaddress.ip_address(address).is_loopback or parsed.port is None or pid <= 0:
+        return False
+    if os.name == "nt":
+        return _windows_endpoint_is_owned(address, parsed.port, pid)
+    if sys.platform == "darwin":
+        outcome = _run_bounded_command(
+            [
+                "/usr/sbin/lsof",
+                "-nP",
+                "-a",
+                "-p",
+                str(pid),
+                f"-iTCP@{address}:{parsed.port}",
+                "-sTCP:LISTEN",
+                "-Fp",
+            ],
+            timeout=1.0,
+        )
+        return bool(outcome.get("success")) and f"p{pid}" in str(outcome.get("stdout") or "").splitlines()
+    return _linux_endpoint_is_owned(address, parsed.port, pid)
+
+
 def _observe_process_identity(pid: int) -> Optional[Dict[str, Any]]:
     """Observe executable and start identity independently from registry/probe claims."""
     if pid <= 0:
@@ -1313,6 +1612,27 @@ def _identity_failure(reason: str) -> Tuple[Dict[str, Any], Sequence[Dict[str, A
     )
 
 
+def _runtime_entry_identity(entry: Mapping[str, Any]) -> Optional[Tuple[str, ...]]:
+    metadata = entry.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    try:
+        pid = str(int(metadata.get("dcc_pid")))
+    except (TypeError, ValueError):
+        return None
+    values = (
+        entry.get("instance_id"),
+        entry.get("mcp_url"),
+        entry.get("dcc_type"),
+        entry.get("adapter_version"),
+        pid,
+        metadata.get("dcc_version"),
+    )
+    if any(not isinstance(value, str) or not value.strip() for value in values):
+        return None
+    return values
+
+
 def _verify(ctx: InstallContext, environ: Mapping[str, str]) -> Tuple[Dict[str, Any], Sequence[Dict[str, Any]]]:
     if not ctx.receipt_path.is_file():
         return (
@@ -1393,8 +1713,9 @@ def _verify(ctx: InstallContext, environ: Mapping[str, str]) -> Tuple[Dict[str, 
         pid = int(metadata.get("dcc_pid"))
     except (TypeError, ValueError):
         return _identity_failure("Painter runtime PID is unavailable.")
+    entry_identity = _runtime_entry_identity(entry)
     if (
-        not str(entry.get("instance_id") or "").strip()
+        entry_identity is None
         or entry.get("adapter_version") != __version__
         or entry.get("dcc_type") != DCC_TYPE
         or metadata.get("dcc_version") != ctx.host_version
@@ -1403,6 +1724,8 @@ def _verify(ctx: InstallContext, environ: Mapping[str, str]) -> Tuple[Dict[str, 
     before = _observe_process_identity(pid)
     if before is None or not _same_path(Path(str(before.get("executable") or "")), ctx.host_path):
         return _identity_failure("Painter runtime executable identity does not match --dcc-path.")
+    if not _endpoint_is_owned_by_process(str(entry["mcp_url"]), pid):
+        return _identity_failure("Painter runtime endpoint is not owned by the observed host process.")
     probe = _probe_runtime_tool(str(entry["mcp_url"]), timeout)
     if not probe.get("success"):
         reason = str(probe.get("message") or probe.get("reason") or probe.get("status") or "Painter ping failed")
@@ -1417,7 +1740,25 @@ def _verify(ctx: InstallContext, environ: Mapping[str, str]) -> Tuple[Dict[str, 
         )
     context = _probe_context(probe)
     after = _observe_process_identity(pid)
-    if context is None or after is None:
+    endpoint_after = _endpoint_is_owned_by_process(str(entry["mcp_url"]), pid)
+    runtime_state_after = query_runtime_state(
+        environ.get("DCC_MCP_REGISTRY_DIR"),
+        dcc_type=DCC_TYPE,
+        include_dead=False,
+    )
+    entries_after = [
+        candidate
+        for candidate in runtime_state_after.get("entries", [])
+        if isinstance(candidate, dict) and candidate.get("mcp_url")
+    ]
+    entry_after = entries_after[0] if len(entries_after) == 1 else None
+    if (
+        context is None
+        or after is None
+        or not endpoint_after
+        or entry_after is None
+        or _runtime_entry_identity(entry_after) != entry_identity
+    ):
         return _identity_failure("Painter probe identity is unavailable.")
     expected_adapter = None if ctx.adapter_module_path is None else str(ctx.adapter_module_path)
     expected_core = None if ctx.core_module_path is None else str(ctx.core_module_path)
@@ -1525,6 +1866,7 @@ def _execute_install(ctx: InstallContext, environ: Mapping[str, str]) -> Lifecyc
     restore_on_verify_failure = ctx.state in {"current", "upgrade"}
     verify: Optional[Dict[str, Any]] = None
     next_steps: Sequence[Dict[str, Any]] = []
+    loader_temporary: Optional[Path] = None
     try:
         transaction_root.mkdir(parents=True, exist_ok=False)
         staged_bootstrap.mkdir(parents=True)
@@ -1568,8 +1910,21 @@ def _execute_install(ctx: InstallContext, environ: Mapping[str, str]) -> Lifecyc
         _rollback_transaction(rollback_paths)
         raise
     finally:
+        cleanup_failed = False
+        if loader_temporary is not None and loader_temporary.exists():
+            try:
+                loader_temporary.unlink()
+            except OSError:
+                cleanup_failed = True
         if transaction_root.exists():
-            safe_remove_tree(transaction_root)
+            removed = safe_remove_tree(transaction_root)
+            cleanup_failed = cleanup_failed or not bool(removed.get("success"))
+        if cleanup_failed:
+            raise LifecycleFailure(
+                "transaction_cleanup",
+                "Painter install transaction cleanup failed.",
+                INSTALL_EXIT_INSTALL,
+            )
 
     if verify is None:
         raise LifecycleFailure("install", "Painter install verification did not run.", INSTALL_EXIT_INSTALL)
@@ -1633,7 +1988,13 @@ def _execute_uninstall(ctx: InstallContext) -> LifecycleOutcome:
         raise
     finally:
         if transaction_root.exists():
-            safe_remove_tree(transaction_root)
+            removed = safe_remove_tree(transaction_root)
+            if not removed.get("success"):
+                raise LifecycleFailure(
+                    "transaction_cleanup",
+                    "Painter uninstall transaction cleanup failed.",
+                    INSTALL_EXIT_INSTALL,
+                )
     result = _base_result(ctx, status="ok")
     result["steps"] = [
         {"id": "receipt", "status": "consumed"},
