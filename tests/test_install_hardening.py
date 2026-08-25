@@ -235,6 +235,92 @@ def test_python_probe_rejects_self_consistent_distributions_outside_trusted_sche
         _installer._query_python(Path(sys.executable).resolve())
 
 
+def test_interpreter_probe_ignores_hostile_cwd_pythonpath_and_sitecustomize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hostile = tmp_path / "hostile"
+    hostile.mkdir()
+
+    def fake_distribution(name: str, package: str, version: str) -> None:
+        package_root = hostile / package
+        package_root.mkdir()
+        module = package_root / "__init__.py"
+        module.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+        digest = base64.urlsafe_b64encode(hashlib.sha256(module.read_bytes()).digest()).rstrip(b"=").decode("ascii")
+        metadata = hostile / f"{name.replace('-', '_')}-{version}.dist-info"
+        metadata.mkdir()
+        (metadata / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n",
+            encoding="utf-8",
+        )
+        (metadata / "RECORD").write_text(
+            f"{package}/__init__.py,sha256={digest},{module.stat().st_size}\n",
+            encoding="utf-8",
+        )
+
+    fake_distribution(
+        "dcc-mcp-substance3d-painter",
+        "dcc_mcp_substance3d_painter",
+        _installer.__version__,
+    )
+    fake_distribution("dcc-mcp-core", "dcc_mcp_core", _installer.MIN_CORE_VERSION)
+    (hostile / "sitecustomize.py").write_text(
+        f"import sysconfig\nsysconfig.get_paths=lambda:{{'purelib':{str(hostile)!r},'platlib':{str(hostile)!r}}}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(hostile)
+    monkeypatch.setenv("PYTHONPATH", str(hostile))
+
+    result = _installer._query_python(Path(sys.executable).resolve())
+
+    assert not _installer._path_within(Path(result["adapter_file"]), hostile)
+    assert not _installer._path_within(Path(result["core_file"]), hostile)
+    assert not _installer._same_path(Path(result["python_root"]), hostile)
+
+
+@pytest.mark.parametrize("failure", ["false", "error", "timeout"])
+def test_owned_process_cleanup_requires_proven_empty_tree(failure: str) -> None:
+    class ExitedProcess:
+        returncode = 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+        @staticmethod
+        def kill():
+            raise AssertionError("an exited root must not be killed")
+
+    class UnprovenOwner:
+        closed = False
+
+        @staticmethod
+        def terminate():
+            return None
+
+        def wait_empty(self, _timeout):
+            if failure == "error":
+                raise OSError("private Job query failure")
+            if failure == "timeout":
+                time.sleep(0.01)
+            return False
+
+        def close(self):
+            self.closed = True
+
+    owner = UnprovenOwner()
+    with pytest.raises(_installer.LifecycleFailure, match="cleanup") as raised:
+        _installer._cleanup_owned_process(ExitedProcess(), owner)
+
+    assert raised.value.stage == "cleanup"
+    assert str(raised.value) == "Interpreter probe process-tree cleanup could not be verified."
+    assert owner.closed is True
+
+
 def test_distribution_record_digest_must_match_the_imported_module(tmp_path: Path) -> None:
     trusted = tmp_path / "site-packages"
     module = trusted / "dcc_mcp_core" / "__init__.py"
