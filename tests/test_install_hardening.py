@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 from jsonschema import Draft202012Validator
 
-from dcc_mcp_substance3d_painter import _installer
+from dcc_mcp_substance3d_painter import _installer, _probe_supervisor
 from dcc_mcp_substance3d_painter.install_cli import main
 
 
@@ -421,6 +422,43 @@ def _pid_alive(pid: int) -> bool:
         return kernel32.WaitForSingleObject(handle, 0) == 0x00000102
     finally:
         kernel32.CloseHandle(handle)
+
+
+def test_posix_process_owner_requests_reapable_group_shutdown(monkeypatch) -> None:
+    process = SimpleNamespace(pid=4321, poll=lambda: None)
+    signals = []
+    monkeypatch.setattr(
+        _installer.os,
+        "killpg",
+        lambda pid, value: signals.append((pid, value)),
+        raising=False,
+    )
+
+    _installer._PosixProcessTreeOwner(process).terminate()
+
+    assert signals == [(4321, signal.SIGTERM)]
+
+
+def test_probe_supervisor_reaps_direct_child_before_exit() -> None:
+    class HungChild:
+        def __init__(self) -> None:
+            self.waits = 0
+            self.kills = 0
+
+        def wait(self, timeout=None):
+            self.waits += 1
+            if self.waits == 1:
+                raise subprocess.TimeoutExpired(["probe"], timeout)
+            return -9
+
+        def kill(self) -> None:
+            self.kills += 1
+
+    child = HungChild()
+
+    assert _probe_supervisor._reap_child_for_shutdown(child, timeout=0.01) is True
+    assert child.kills == 1
+    assert child.waits == 2
 
 
 def test_interpreter_probe_timeout_terminates_root_and_descendant(tmp_path: Path) -> None:

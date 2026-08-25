@@ -10,6 +10,7 @@ import os
 import plistlib
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -203,7 +204,7 @@ class _PosixProcessTreeOwner(_ProcessTreeOwner):
         # that identity-bound leader handle has observed exit: the identifier
         # may already have been reused by an unrelated process group.
         if self._process.poll() is None:
-            os.killpg(self._process.pid, 9)
+            os.killpg(self._process.pid, signal.SIGTERM)
 
     def wait_empty(self, timeout: float) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
