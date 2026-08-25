@@ -399,6 +399,21 @@ def test_lifecycle_lock_rejects_a_concurrent_profile_mutation(tmp_path: Path) ->
                 pass
 
 
+def test_profile_lock_cleanup_uses_the_python_39_compatible_stat_api(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_stat = Path.stat
+
+    def python_39_stat(path: Path, *args, **kwargs):
+        if "follow_symlinks" in kwargs:
+            raise TypeError("Path.stat() got an unexpected keyword argument 'follow_symlinks'")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", python_39_stat)
+    with _installer._profile_lock(tmp_path / "profile"):
+        pass
+
+
 def test_verify_rejects_foreign_runtime_executable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _context(tmp_path)
     _write_current_install(ctx)
