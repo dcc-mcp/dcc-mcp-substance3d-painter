@@ -271,11 +271,23 @@ def test_interpreter_probe_ignores_hostile_cwd_pythonpath_and_sitecustomize(
     monkeypatch.chdir(hostile)
     monkeypatch.setenv("PYTHONPATH", str(hostile))
 
-    result = _installer._query_python(Path(sys.executable).resolve())
+    result = _installer._query_python(Path(sys.executable))
 
     assert not _installer._path_within(Path(result["adapter_file"]), hostile)
     assert not _installer._path_within(Path(result["core_file"]), hostile)
     assert not _installer._same_path(Path(result["python_root"]), hostile)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX virtual environments use an executable symlink")
+def test_selected_interpreter_preserves_the_virtual_environment_symlink(tmp_path: Path) -> None:
+    interpreter = tmp_path / "venv" / "bin" / "python"
+    interpreter.parent.mkdir(parents=True)
+    interpreter.symlink_to(Path(sys.executable))
+
+    selected = _installer._selected_interpreter_path(str(interpreter))
+
+    assert selected == interpreter.absolute()
+    assert selected != interpreter.resolve()
 
 
 @pytest.mark.parametrize("failure", ["false", "error", "timeout"])

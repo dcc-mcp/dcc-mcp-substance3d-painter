@@ -66,7 +66,7 @@ def test_install_defaults_to_a_non_mutating_json_plan(tmp_path, monkeypatch, cap
                 "--dcc-path",
                 str(host),
                 "--python",
-                str(Path(sys.executable).resolve()),
+                str(Path(sys.executable).absolute()),
                 "--json",
                 "--yes",
             ],
