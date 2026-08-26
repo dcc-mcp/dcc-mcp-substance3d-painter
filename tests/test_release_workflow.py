@@ -27,6 +27,11 @@ def test_release_workflow_has_one_verified_artifact_handoff() -> None:
 
 
 def test_release_workflow_rejects_comment_decoys_and_job_drift() -> None:
+    canonical = _parsed_workflow()
+    canonical_step = canonical["jobs"]["publish-pypi"]["steps"][2]
+    canonical_step["run"] = ("# harmless comment\n" + canonical_step["run"]).replace("\n", "\r\n")
+    validate_release_workflow(canonical)
+
     document = _parsed_workflow()
     build_steps = document["jobs"]["build-release-artifact"]["steps"]
     document["jobs"]["build-release-artifact"]["steps"] = [
@@ -45,10 +50,49 @@ def test_release_workflow_rejects_comment_decoys_and_job_drift() -> None:
     with pytest.raises(ValueError, match="workflow|step|job"):
         validate_release_workflow(changed)
 
+    document = _parsed_workflow()
+    before_upload = document["jobs"]["publish-pypi"]["steps"][2]
+    before_upload["run"] = before_upload["run"].replace(
+        "python -B tools/release_integrity.py verify-live-tag",
+        "true # python -B tools/release_integrity.py verify-live-tag",
+    )
+    with pytest.raises(ValueError, match="workflow|command|tag"):
+        validate_release_workflow(document)
+
+    document = _parsed_workflow()
+    build_source = document["jobs"]["build-release-artifact"]["steps"][2]
+    build_source["run"] = build_source["run"].replace(
+        "python -B tools/release_integrity.py verify-source",
+        "true # python -B tools/release_integrity.py verify-source",
+    )
+    with pytest.raises(ValueError, match="workflow|command|source"):
+        validate_release_workflow(document)
+
+
+def test_release_workflows_bind_reviewed_timeouts() -> None:
+    document = _parsed_workflow()
+    validate_release_workflow(document)
+    for name in document["jobs"]:
+        changed = copy.deepcopy(document)
+        changed["jobs"][name].pop("timeout-minutes", None)
+        with pytest.raises(ValueError, match="workflow|timeout"):
+            validate_release_workflow(changed)
+
+    lock_document = yaml.safe_load(LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8"))
+    validate_lock_sync_workflow(lock_document)
+    lock_document["jobs"]["sync-release-lock"].pop("timeout-minutes", None)
+    with pytest.raises(ValueError, match="workflow|timeout"):
+        validate_lock_sync_workflow(lock_document)
+
 
 def test_release_lock_sync_is_exact_and_fail_closed() -> None:
     document = yaml.safe_load(LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8"))
     validate_lock_sync_workflow(document)
+
+    canonical = copy.deepcopy(document)
+    canonical_push = canonical["jobs"]["sync-release-lock"]["steps"][-1]
+    canonical_push["run"] = ("# harmless comment\n" + canonical_push["run"]).replace("\n", "\r\n")
+    validate_lock_sync_workflow(canonical)
 
     changed = copy.deepcopy(document)
     changed["jobs"]["sync-release-lock"]["steps"][-1]["run"] = "git push origin HEAD"
@@ -58,6 +102,16 @@ def test_release_lock_sync_is_exact_and_fail_closed() -> None:
     changed = copy.deepcopy(document)
     changed["jobs"]["sync-release-lock"]["steps"].insert(-1, {"name": "Comment decoy", "run": "# git add -- uv.lock"})
     with pytest.raises(ValueError, match="workflow|step|job"):
+        validate_lock_sync_workflow(changed)
+
+    changed = copy.deepcopy(document)
+    push = changed["jobs"]["sync-release-lock"]["steps"][-1]
+    push["run"] = push["run"].replace(
+        "python -B tools/release_integrity.py verify-release-pr",
+        "true # python -B tools/release_integrity.py verify-release-pr",
+    )
+    push["run"] += "\ngit push --force origin HEAD\n"
+    with pytest.raises(ValueError, match="workflow|lease|push|command"):
         validate_lock_sync_workflow(changed)
 
 
@@ -95,3 +149,41 @@ def test_release_version_anchors_require_one_synchronized_editable_lock_root(tmp
     )
     with pytest.raises(ValueError, match="lock|root"):
         verify_version_anchors(tmp_path, require_lock=True)
+
+
+def test_release_version_anchors_reject_non_regular_and_linked_files(tmp_path: Path) -> None:
+    relatives = (
+        ".release-please-manifest.json",
+        "pyproject.toml",
+        "uv.lock",
+        "src/dcc_mcp_substance3d_painter/__version__.py",
+    )
+
+    def copy_anchors(root: Path) -> None:
+        for relative in relatives:
+            source = ROOT / relative
+            target = root / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+    for index, relative in enumerate(relatives):
+        case = tmp_path / f"directory-{index}"
+        copy_anchors(case)
+        target = case / relative
+        target.unlink()
+        target.mkdir()
+        with pytest.raises(ValueError, match="anchor|lock|regular"):
+            verify_version_anchors(case, require_lock=True)
+
+    for index, relative in enumerate(relatives):
+        case = tmp_path / f"symlink-{index}"
+        copy_anchors(case)
+        target = case / relative
+        real = target.with_name(f"{target.name}.real")
+        target.replace(real)
+        try:
+            target.symlink_to(real.name)
+        except OSError:
+            pytest.skip("symbolic links are unavailable on this runner")
+        with pytest.raises(ValueError, match="anchor|lock|regular"):
+            verify_version_anchors(case, require_lock=True)

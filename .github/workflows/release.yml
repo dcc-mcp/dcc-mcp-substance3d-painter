@@ -13,6 +13,7 @@ permissions: {}
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
@@ -34,6 +35,7 @@ jobs:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     outputs:
@@ -57,24 +59,25 @@ jobs:
           VERSION: ${{ needs.release-please.outputs.version }}
         run: |
           set -euo pipefail
-          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+          trap 'rm -f "$RUNNER_TEMP/release-before-build.json"' EXIT
+          timeout --signal=TERM --kill-after=10s 60s gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
             --json tagName,targetCommitish,isDraft,isPrerelease,assets \
             > "$RUNNER_TEMP/release-before-build.json"
-          python -B tools/release_integrity.py verify-source \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-source \
             --head-sha "$(git rev-parse HEAD)" \
             --tag-sha "$(git rev-parse "${TAG_NAME}^{commit}")" \
             --release-target "$(jq -r .targetCommitish "$RUNNER_TEMP/release-before-build.json")" \
             --expected-sha "$SOURCE_SHA" --tag-name "$TAG_NAME" --version "$VERSION"
-          python -B tools/release_integrity.py verify-release-target \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-release-target \
             --metadata "$RUNNER_TEMP/release-before-build.json" \
             --expected-tag "$TAG_NAME" --expected-source-sha "$SOURCE_SHA" \
             --require-empty-assets
       - name: Install build tools
-        run: python -m pip install --upgrade pip build twine
+        run: timeout --signal=TERM --kill-after=10s 300s python -m pip install --upgrade pip build twine
       - name: Build distributions once
-        run: python -m build
+        run: timeout --signal=TERM --kill-after=10s 300s python -m build
       - name: Check distribution metadata
-        run: python -m twine check dist/*
+        run: timeout --signal=TERM --kill-after=10s 60s python -m twine check dist/*
       - name: Stage exact distribution bundle
         shell: bash
         env:
@@ -83,9 +86,9 @@ jobs:
           set -euo pipefail
           mkdir release-bundle
           mv dist release-bundle/dist
-          python -B tools/release_integrity.py write-checksums \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py write-checksums \
             --directory release-bundle --version "$VERSION"
-          python -B tools/release_integrity.py verify-bundle \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-bundle \
             --directory release-bundle --version "$VERSION"
       - name: Upload immutable release artifact
         id: upload
@@ -100,6 +103,7 @@ jobs:
     needs: [release-please, build-release-artifact]
     if: needs.release-please.outputs.release_created == 'true' && needs.build-release-artifact.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     environment:
       name: pypi
       url: https://pypi.org/p/dcc-mcp-substance3d-painter
@@ -121,17 +125,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          python -B tools/release_integrity.py verify-artifact \
+          trap 'rm -f "$RUNNER_TEMP/artifact.json" "$RUNNER_TEMP/artifact.zip"' EXIT
+          timeout --signal=TERM --kill-after=10s 60s gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-artifact \
             --metadata "$RUNNER_TEMP/artifact.json" --expected-id "$ARTIFACT_ID" \
             --expected-digest "$ARTIFACT_DIGEST" --expected-name release-distributions \
             --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$SOURCE_SHA" \
             --expected-repository "$GITHUB_REPOSITORY"
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
-          python -B tools/release_integrity.py verify-extract \
+          timeout --signal=TERM --kill-after=10s 120s gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-extract \
             --archive "$RUNNER_TEMP/artifact.zip" --expected-digest "$ARTIFACT_DIGEST" \
             --output release-bundle
-          python -B tools/release_integrity.py verify-bundle \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-bundle \
             --directory release-bundle --version "$VERSION"
       - name: Re-fetch and verify before PyPI upload
         shell: bash
@@ -144,20 +149,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact-before-pypi.json"
-          python -B tools/release_integrity.py verify-artifact \
+          trap 'rm -f "$RUNNER_TEMP/artifact-before-pypi.json" "$RUNNER_TEMP/tag-before-pypi.txt" "$RUNNER_TEMP/release-before-pypi.json"' EXIT
+          timeout --signal=TERM --kill-after=10s 60s gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact-before-pypi.json"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-artifact \
             --metadata "$RUNNER_TEMP/artifact-before-pypi.json" --expected-id "$ARTIFACT_ID" \
             --expected-digest "$ARTIFACT_DIGEST" --expected-name release-distributions \
             --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$SOURCE_SHA" \
             --expected-repository "$GITHUB_REPOSITORY"
-          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+          timeout --signal=TERM --kill-after=10s 60s git ls-remote --exit-code origin \
+            "refs/tags/$TAG_NAME" "refs/tags/$TAG_NAME^{}" > "$RUNNER_TEMP/tag-before-pypi.txt"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-live-tag \
+            --refs "$RUNNER_TEMP/tag-before-pypi.txt" --expected-tag "$TAG_NAME" \
+            --expected-source-sha "$SOURCE_SHA"
+          timeout --signal=TERM --kill-after=10s 60s gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
             --json tagName,targetCommitish,isDraft,isPrerelease,assets \
             > "$RUNNER_TEMP/release-before-pypi.json"
-          python -B tools/release_integrity.py verify-release-target \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-release-target \
             --metadata "$RUNNER_TEMP/release-before-pypi.json" \
             --expected-tag "$TAG_NAME" --expected-source-sha "$SOURCE_SHA" \
             --require-empty-assets
-          python -B tools/release_integrity.py verify-bundle \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-bundle \
             --directory release-bundle --version "$VERSION"
       - name: Upload verified distributions to PyPI
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33
@@ -170,6 +181,7 @@ jobs:
     needs: [release-please, build-release-artifact, publish-pypi]
     if: needs.release-please.outputs.release_created == 'true' && needs.publish-pypi.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: write
@@ -187,17 +199,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
-          python -B tools/release_integrity.py verify-artifact \
+          trap 'rm -f "$RUNNER_TEMP/artifact.json" "$RUNNER_TEMP/artifact.zip"' EXIT
+          timeout --signal=TERM --kill-after=10s 60s gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact.json"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-artifact \
             --metadata "$RUNNER_TEMP/artifact.json" --expected-id "$ARTIFACT_ID" \
             --expected-digest "$ARTIFACT_DIGEST" --expected-name release-distributions \
             --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$SOURCE_SHA" \
             --expected-repository "$GITHUB_REPOSITORY"
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
-          python -B tools/release_integrity.py verify-extract \
+          timeout --signal=TERM --kill-after=10s 120s gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-extract \
             --archive "$RUNNER_TEMP/artifact.zip" --expected-digest "$ARTIFACT_DIGEST" \
             --output release-bundle
-          python -B tools/release_integrity.py verify-bundle \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-bundle \
             --directory release-bundle --version "$VERSION"
       - name: Re-fetch and verify before GitHub upload
         shell: bash
@@ -210,30 +223,37 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact-before-github.json"
-          python -B tools/release_integrity.py verify-artifact \
+          trap 'rm -f "$RUNNER_TEMP/artifact-before-github.json" "$RUNNER_TEMP/tag-before-github.txt" "$RUNNER_TEMP/release-before-github.json"' EXIT
+          timeout --signal=TERM --kill-after=10s 60s gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/artifact-before-github.json"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-artifact \
             --metadata "$RUNNER_TEMP/artifact-before-github.json" --expected-id "$ARTIFACT_ID" \
             --expected-digest "$ARTIFACT_DIGEST" --expected-name release-distributions \
             --expected-run-id "$GITHUB_RUN_ID" --expected-head-sha "$SOURCE_SHA" \
             --expected-repository "$GITHUB_REPOSITORY"
-          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+          timeout --signal=TERM --kill-after=10s 60s git ls-remote --exit-code origin \
+            "refs/tags/$TAG_NAME" "refs/tags/$TAG_NAME^{}" > "$RUNNER_TEMP/tag-before-github.txt"
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-live-tag \
+            --refs "$RUNNER_TEMP/tag-before-github.txt" --expected-tag "$TAG_NAME" \
+            --expected-source-sha "$SOURCE_SHA"
+          timeout --signal=TERM --kill-after=10s 60s gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
             --json tagName,targetCommitish,isDraft,isPrerelease,assets \
             > "$RUNNER_TEMP/release-before-github.json"
-          python -B tools/release_integrity.py verify-release-target \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-release-target \
             --metadata "$RUNNER_TEMP/release-before-github.json" \
             --expected-tag "$TAG_NAME" --expected-source-sha "$SOURCE_SHA" \
             --require-empty-assets
-          python -B tools/release_integrity.py verify-bundle \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-bundle \
             --directory release-bundle --version "$VERSION"
       - name: Upload GitHub release assets
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
-        run: >-
-          gh release upload "$TAG_NAME"
-          release-bundle/dist/* release-bundle/SHA256SUMS
-          --repo "$GITHUB_REPOSITORY"
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=10s 120s gh release upload "$TAG_NAME" \
+            release-bundle/dist/* release-bundle/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY"
       - name: Verify published GitHub release assets
         shell: bash
         env:
@@ -243,10 +263,11 @@ jobs:
           VERSION: ${{ needs.release-please.outputs.version }}
         run: |
           set -euo pipefail
-          gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
+          trap 'rm -f "$RUNNER_TEMP/release-after-github.json"' EXIT
+          timeout --signal=TERM --kill-after=10s 60s gh release view "$TAG_NAME" --repo "$GITHUB_REPOSITORY" \
             --json tagName,targetCommitish,isDraft,isPrerelease,assets \
             > "$RUNNER_TEMP/release-after-github.json"
-          python -B tools/release_integrity.py verify-published-release \
+          timeout --signal=TERM --kill-after=10s 60s python -B tools/release_integrity.py verify-published-release \
             --metadata "$RUNNER_TEMP/release-after-github.json" \
             --directory release-bundle --version "$VERSION" \
             --expected-tag "$TAG_NAME" --expected-source-sha "$SOURCE_SHA"

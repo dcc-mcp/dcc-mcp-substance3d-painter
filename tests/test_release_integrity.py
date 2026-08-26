@@ -10,7 +10,9 @@ import pytest
 from tools.release_integrity import (
     verify_and_extract_artifact,
     verify_distribution_bundle,
+    verify_live_tag_ref,
     verify_published_release,
+    verify_release_pr_snapshot,
     verify_release_source,
     verify_release_target,
     verify_workflow_artifact,
@@ -58,6 +60,10 @@ def test_workflow_artifact_binds_exact_immutable_identity() -> None:
         ),
         "run": lambda item: item["workflow_run"].update(id=5679),
         "head": lambda item: item["workflow_run"].update(head_sha="4" * 40),
+        "boolean-id": lambda item: item.update(id=True),
+        "float-id": lambda item: item.update(id=1234.0),
+        "boolean-run": lambda item: item["workflow_run"].update(id=True),
+        "float-run": lambda item: item["workflow_run"].update(id=5678.0),
     }
     for mutate in mutations.values():
         metadata = copy.deepcopy(_artifact_metadata())
@@ -69,6 +75,18 @@ def test_workflow_artifact_binds_exact_immutable_identity() -> None:
                 expected_digest=ARTIFACT_DIGEST,
                 expected_name="release-distributions",
                 expected_run_id=5678,
+                expected_head_sha=SOURCE_SHA,
+                expected_repository=REPOSITORY,
+            )
+
+    for expected_id, expected_run_id in ((True, 5678), (1234.0, 5678), (1234, True), (1234, 5678.0)):
+        with pytest.raises(ValueError, match="integer|ID|run"):
+            verify_workflow_artifact(
+                _artifact_metadata(),
+                expected_id=expected_id,
+                expected_digest=ARTIFACT_DIGEST,
+                expected_name="release-distributions",
+                expected_run_id=expected_run_id,
                 expected_head_sha=SOURCE_SHA,
                 expected_repository=REPOSITORY,
             )
@@ -131,6 +149,17 @@ def test_artifact_transport_is_verified_before_safe_extraction(tmp_path: Path) -
         verify_and_extract_artifact(archive, expected_digest="0" * 64, output_directory=rejected)
     assert not rejected.exists()
 
+    symlink = tmp_path / "symlink.zip"
+    with zipfile.ZipFile(symlink, "w") as bundle:
+        link = zipfile.ZipInfo("dist/link.whl")
+        link.create_system = 3
+        link.external_attr = (0o120777 << 16) | 0xA1ED0000
+        bundle.writestr(link, "target.whl")
+    symlink_digest = hashlib.sha256(symlink.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="artifact"):
+        verify_and_extract_artifact(symlink, expected_digest=symlink_digest, output_directory=rejected)
+    assert not rejected.exists()
+
     hostile = tmp_path / "hostile.zip"
     with zipfile.ZipFile(hostile, "w") as bundle:
         bundle.writestr("../outside.txt", "escape")
@@ -148,6 +177,100 @@ def test_artifact_transport_is_verified_before_safe_extraction(tmp_path: Path) -
     with pytest.raises(ValueError, match="artifact"):
         verify_and_extract_artifact(duplicate, expected_digest=duplicate_digest, output_directory=rejected)
     assert not rejected.exists()
+
+    unicode_duplicate = tmp_path / "unicode-duplicate.zip"
+    with zipfile.ZipFile(unicode_duplicate, "w") as bundle:
+        bundle.writestr("dist/caf\u00e9.whl", "one")
+        bundle.writestr("dist/cafe\u0301.whl", "two")
+    unicode_digest = hashlib.sha256(unicode_duplicate.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="artifact"):
+        verify_and_extract_artifact(
+            unicode_duplicate,
+            expected_digest=unicode_digest,
+            output_directory=rejected,
+        )
+    assert not rejected.exists()
+
+
+def test_release_pr_snapshot_is_unique_current_and_exact() -> None:
+    metadata = [
+        {
+            "number": 31,
+            "state": "open",
+            "title": "chore(main): release 0.4.1",
+            "changed_files": 4,
+            "head": {
+                "ref": "release-please--branches--main--components--dcc-mcp-substance3d-painter",
+                "sha": SOURCE_SHA,
+                "repo": {"full_name": REPOSITORY},
+            },
+            "base": {
+                "ref": "main",
+                "sha": "3" * 40,
+                "repo": {"full_name": REPOSITORY},
+            },
+        }
+    ]
+    files = [
+        {"filename": ".release-please-manifest.json"},
+        {"filename": "CHANGELOG.md"},
+        {"filename": "pyproject.toml"},
+        {"filename": "src/dcc_mcp_substance3d_painter/__version__.py"},
+    ]
+    arguments = {
+        "expected_number": 31,
+        "expected_version": "0.4.1",
+        "expected_base_sha": "3" * 40,
+        "expected_head_sha": SOURCE_SHA,
+        "expected_head_ref": "release-please--branches--main--components--dcc-mcp-substance3d-painter",
+        "expected_repository": REPOSITORY,
+    }
+    detail = copy.deepcopy(metadata[0])
+    verify_release_pr_snapshot(metadata, detail, files, **arguments)
+
+    mutations = {
+        "closed": lambda prs, _files: prs[0].update(state="closed"),
+        "retargeted": lambda prs, _files: prs[0]["base"].update(ref="develop"),
+        "title": lambda prs, _files: prs[0].update(title="chore(main): release latest"),
+        "head": lambda prs, _files: prs[0]["head"].update(sha="4" * 40),
+        "fork": lambda prs, _files: prs[0]["head"]["repo"].update(full_name="fork/repo"),
+        "multi-pr": lambda prs, _files: prs.append(copy.deepcopy(prs[0])),
+        "files": lambda _prs, changed: changed.append({"filename": "unreviewed.txt"}),
+    }
+    for mutate in mutations.values():
+        changed_metadata = copy.deepcopy(metadata)
+        changed_detail = copy.deepcopy(detail)
+        changed_files = copy.deepcopy(files)
+        mutate(changed_metadata, changed_files)
+        with pytest.raises((TypeError, ValueError), match="release PR|repository|file"):
+            verify_release_pr_snapshot(changed_metadata, changed_detail, changed_files, **arguments)
+
+    changed_detail = copy.deepcopy(detail)
+    changed_detail["head"]["sha"] = "4" * 40
+    with pytest.raises(ValueError, match="release PR"):
+        verify_release_pr_snapshot(metadata, changed_detail, files, **arguments)
+
+
+def test_live_release_tag_must_still_peel_to_the_exact_source() -> None:
+    verify_live_tag_ref(
+        f"{SOURCE_SHA}\trefs/tags/v0.4.1\n",
+        expected_tag="v0.4.1",
+        expected_source_sha=SOURCE_SHA,
+    )
+    verify_live_tag_ref(
+        f"{'3' * 40}\trefs/tags/v0.4.1\n{SOURCE_SHA}\trefs/tags/v0.4.1^{{}}\n",
+        expected_tag="v0.4.1",
+        expected_source_sha=SOURCE_SHA,
+    )
+    rejected = (
+        f"{'3' * 40}\trefs/tags/v0.4.1\n",
+        f"{'3' * 40}\trefs/tags/v0.4.1\n{'4' * 40}\trefs/tags/v0.4.1^{{}}\n",
+        f"{SOURCE_SHA}\trefs/tags/v0.4.2\n",
+        f"{SOURCE_SHA}\trefs/tags/v0.4.1\n{SOURCE_SHA}\trefs/tags/v0.4.1\n",
+    )
+    for refs in rejected:
+        with pytest.raises(ValueError, match="release tag"):
+            verify_live_tag_ref(refs, expected_tag="v0.4.1", expected_source_sha=SOURCE_SHA)
 
 
 def test_release_source_and_empty_target_bind_exact_merge_sha() -> None:
