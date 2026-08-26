@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.4.0...v0.4.1) (2026-08-26)
+
+
+### Bug Fixes
+
+* bind release step controls ([98c03ad](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/98c03ad30b1d8c75f201c2c05d6a098aed5417e9))
+* bind release workflow job controls ([d2293c9](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/d2293c9195e3c0c3e5dd45e72bb730bf4dc9d71f))
+* close release integrity races ([537ef42](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/537ef423c70f151482736f4eef14f9a95145d54f))
+* harden Painter server startup ([dd122e2](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/dd122e227b39b3fc3a6193529da9965c82318cfc))
+* harden release artifact delivery ([5b66f7d](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/5b66f7dabb1490abc03e2195da5efa48a3118a47))
+* make release lock test version-independent ([a5d7660](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/a5d76601784bce457f72bdd7d31f7cbad1ed7220))
+* support Python 3.9 release checks ([5758f4f](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/5758f4f8804ffd40bdea4b8e8f97fbb5a417036f))
+
 ## [0.4.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.3.0...v0.4.0) (2026-08-25)
 
 
