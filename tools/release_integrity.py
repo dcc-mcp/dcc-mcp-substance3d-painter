@@ -437,6 +437,16 @@ def _named_steps(job: dict) -> dict[str, dict]:
     return named
 
 
+def _require_reviewed_job_controls(job: object, expected: dict[str, object]) -> None:
+    if not isinstance(job, dict):
+        raise TypeError("release workflow job must be an object")
+    if set(job) != set(expected) | {"steps"} or not isinstance(job.get("steps"), list):
+        raise ValueError("release workflow job control set has drifted")
+    actual = {key: value for key, value in job.items() if key != "steps"}
+    if actual != expected:
+        raise ValueError("release workflow job controls have drifted")
+
+
 def _reviewed_run_step(
     name: str,
     *,
@@ -586,34 +596,54 @@ def validate_release_workflow(workflow: object) -> None:
     if not isinstance(jobs, dict) or set(jobs) != expected_job_names:
         raise ValueError("release workflow job set has drifted")
 
-    release = jobs["release-please"]
-    build = jobs["build-release-artifact"]
-    pypi = jobs["publish-pypi"]
-    github = jobs["attach-github-assets"]
-    if any(job.get("timeout-minutes") != 15 for job in (release, build, pypi, github)):
-        raise ValueError("release workflow job timeout has drifted")
-    if release.get("permissions") != {"contents": "write", "pull-requests": "write"}:
-        raise ValueError("release workflow release-please permissions have drifted")
-    if build.get("permissions") != {"contents": "read"}:
-        raise ValueError("release workflow build permissions have drifted")
-    if pypi.get("permissions") != {
-        "actions": "read",
-        "contents": "read",
-        "id-token": "write",
-    }:
-        raise ValueError("release workflow PyPI permissions have drifted")
-    if github.get("permissions") != {"actions": "read", "contents": "write"}:
-        raise ValueError("release workflow GitHub permissions have drifted")
-    if build.get("needs") != "release-please":
-        raise ValueError("release workflow build dependency has drifted")
-    if pypi.get("needs") != ["release-please", "build-release-artifact"]:
-        raise ValueError("release workflow PyPI dependency has drifted")
-    if github.get("needs") != [
-        "release-please",
-        "build-release-artifact",
-        "publish-pypi",
-    ]:
-        raise ValueError("release workflow GitHub dependency has drifted")
+    reviewed_job_controls = {
+        "release-please": {
+            "runs-on": "ubuntu-latest",
+            "timeout-minutes": 15,
+            "if": "github.ref == 'refs/heads/main'",
+            "permissions": {"contents": "write", "pull-requests": "write"},
+            "outputs": {
+                "release_created": "${{ steps.release.outputs.release_created == 'true' }}",
+                "tag_name": "${{ steps.release.outputs.tag_name }}",
+                "version": "${{ steps.release.outputs.version }}",
+                "source_sha": "${{ steps.release.outputs.sha }}",
+            },
+        },
+        "build-release-artifact": {
+            "needs": "release-please",
+            "if": "needs.release-please.outputs.release_created == 'true'",
+            "runs-on": "ubuntu-latest",
+            "timeout-minutes": 15,
+            "permissions": {"contents": "read"},
+            "outputs": {
+                "artifact_id": "${{ steps.upload.outputs.artifact-id }}",
+                "artifact_digest": "${{ steps.upload.outputs.artifact-digest }}",
+            },
+        },
+        "publish-pypi": {
+            "needs": ["release-please", "build-release-artifact"],
+            "if": (
+                "needs.release-please.outputs.release_created == 'true' && "
+                "needs.build-release-artifact.result == 'success'"
+            ),
+            "runs-on": "ubuntu-latest",
+            "timeout-minutes": 15,
+            "environment": {
+                "name": "pypi",
+                "url": "https://pypi.org/p/dcc-mcp-substance3d-painter",
+            },
+            "permissions": {"actions": "read", "contents": "read", "id-token": "write"},
+        },
+        "attach-github-assets": {
+            "needs": ["release-please", "build-release-artifact", "publish-pypi"],
+            "if": ("needs.release-please.outputs.release_created == 'true' && needs.publish-pypi.result == 'success'"),
+            "runs-on": "ubuntu-latest",
+            "timeout-minutes": 15,
+            "permissions": {"actions": "read", "contents": "write"},
+        },
+    }
+    for job_name, expected in reviewed_job_controls.items():
+        _require_reviewed_job_controls(jobs[job_name], expected)
 
     expected_steps = {
         "release-please": ["uses:googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"],
@@ -937,17 +967,21 @@ def validate_lock_sync_workflow(workflow: object) -> None:
     if not isinstance(jobs, dict) or set(jobs) != {"sync-release-lock"}:
         raise ValueError("release lock workflow job set has drifted")
     job = jobs["sync-release-lock"]
-    if job.get("timeout-minutes") != 10:
-        raise ValueError("release lock workflow job timeout has drifted")
-    condition = job.get("if")
-    required_condition_fragments = (
-        "github.event.pull_request.head.repo.full_name == github.repository",
-        "github.event.pull_request.base.ref == 'main'",
-        "github.event.pull_request.head.ref == 'release-please--branches--main--components--dcc-mcp-substance3d-painter'",
-        "startsWith(github.event.pull_request.title, 'chore(main): release ')",
+    expected_condition = (
+        "github.event.pull_request.head.repo.full_name == github.repository && "
+        "github.event.pull_request.base.ref == 'main' && "
+        "github.event.pull_request.head.ref == "
+        "'release-please--branches--main--components--dcc-mcp-substance3d-painter' && "
+        "startsWith(github.event.pull_request.title, 'chore(main): release ')"
     )
-    if not isinstance(condition, str) or any(fragment not in condition for fragment in required_condition_fragments):
-        raise ValueError("release lock workflow job guard has drifted")
+    _require_reviewed_job_controls(
+        job,
+        {
+            "runs-on": "ubuntu-latest",
+            "timeout-minutes": 10,
+            "if": expected_condition,
+        },
+    )
     steps = job.get("steps")
     expected_steps = [
         "uses:actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
@@ -1025,9 +1059,9 @@ def validate_lock_sync_workflow(workflow: object) -> None:
         "token": "${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}",
     }:
         raise ValueError("release lock workflow checkout identity has drifted")
-    if named["Install pinned uv"].get("run") != (
-        'timeout --signal=TERM --kill-after=10s 300s python -m pip install "uv==0.11.19"'
-    ):
+    if _shell_commands(named["Install pinned uv"]) != [
+        ("timeout", "--signal=TERM", "--kill-after=10s", "300s", "python", "-m", "pip", "install", "uv==0.11.19")
+    ]:
         raise ValueError("release lock workflow uv version has drifted")
     _require_bounded_commands(named["Install pinned uv"], ("python", "-m", "pip"))
     _require_fragments(
@@ -1048,7 +1082,9 @@ def validate_lock_sync_workflow(workflow: object) -> None:
         ("python", "-B", "tools/release_integrity.py", "verify-release-paths"),
         ("python", "-B", "tools/release_integrity.py", "verify-version-anchors"),
     )
-    if named["Synchronize root uv.lock"].get("run") != ("timeout --signal=TERM --kill-after=10s 180s uv lock"):
+    if _shell_commands(named["Synchronize root uv.lock"]) != [
+        ("timeout", "--signal=TERM", "--kill-after=10s", "180s", "uv", "lock")
+    ]:
         raise ValueError("release lock workflow generation command has drifted")
     _require_bounded_commands(named["Synchronize root uv.lock"], ("uv", "lock"))
     _require_fragments(
