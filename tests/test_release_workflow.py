@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import shutil
 from pathlib import Path
 
@@ -306,14 +307,20 @@ def test_release_version_anchors_require_one_synchronized_editable_lock_root(tmp
     verify_version_anchors(tmp_path, require_lock=True)
     lock = tmp_path / "uv.lock"
     original = lock.read_text(encoding="utf-8")
-    lock.write_text(
-        original.replace(
-            'name = "dcc-mcp-substance3d-painter"\nversion = "0.4.0"',
-            'name = "dcc-mcp-substance3d-painter"\nversion = "0.4.1"',
-            1,
-        ),
-        encoding="utf-8",
+    root_version = re.compile(
+        r'(?m)^(name = "dcc-mcp-substance3d-painter"\nversion = ")([^"\n]+)("\nsource = \{ editable = "\." \})$'
     )
+    match = root_version.search(original)
+    assert match is not None
+    changed_version = "0.0.0" if match.group(2) != "0.0.0" else "0.0.1"
+    changed, replacement_count = root_version.subn(
+        rf"\g<1>{changed_version}\g<3>",
+        original,
+        count=1,
+    )
+    assert replacement_count == 1
+    assert changed.encode("utf-8") != original.encode("utf-8")
+    lock.write_text(changed, encoding="utf-8")
     verify_version_anchors(tmp_path, require_lock=False)
     with pytest.raises(ValueError, match="version|lock"):
         verify_version_anchors(tmp_path, require_lock=True)
