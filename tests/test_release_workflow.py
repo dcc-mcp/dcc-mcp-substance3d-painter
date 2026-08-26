@@ -41,6 +41,31 @@ def _mutate_execution_control(step: dict, mutation: str) -> None:
         raise AssertionError(f"unknown workflow mutation: {mutation}")
 
 
+def _mutate_job_control(job: dict, mutation: str) -> None:
+    if mutation == "runs-on":
+        job["runs-on"] = "windows-latest"
+    elif mutation == "if":
+        job["if"] = "${{ always() }}"
+    elif mutation == "outputs":
+        job["outputs"] = {"source_sha": "${{ github.sha }}"}
+    elif mutation == "environment":
+        job["environment"] = {"name": "unreviewed"}
+    elif mutation == "needs":
+        job["needs"] = ["unreviewed"]
+    elif mutation == "permissions":
+        job["permissions"] = {"contents": "write"}
+    elif mutation == "timeout-minutes":
+        job["timeout-minutes"] = 1
+    elif mutation == "env":
+        job["env"] = {"BASH_ENV": "./unreviewed.sh"}
+    elif mutation == "key":
+        job["container"] = "unreviewed:latest"
+    elif mutation == "steps":
+        job["steps"].append({"name": "Unreviewed", "run": "true"})
+    else:
+        raise AssertionError(f"unknown workflow job mutation: {mutation}")
+
+
 def test_release_workflow_has_one_verified_artifact_handoff() -> None:
     validate_release_workflow(_parsed_workflow())
 
@@ -123,6 +148,33 @@ def test_release_workflow_rejects_shell_comment_decoy() -> None:
         validate_release_workflow(yaml.safe_load(changed))
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "runs-on",
+        "if",
+        "outputs",
+        "environment",
+        "needs",
+        "permissions",
+        "timeout-minutes",
+        "env",
+        "key",
+        "steps",
+    ),
+)
+@pytest.mark.parametrize(
+    "job_name",
+    ("release-please", "build-release-artifact", "publish-pypi", "attach-github-assets"),
+)
+def test_release_workflow_rejects_job_control_drift(job_name: str, mutation: str) -> None:
+    document = _parsed_workflow()
+    _mutate_job_control(document["jobs"][job_name], mutation)
+
+    with pytest.raises(ValueError, match="workflow|job|control"):
+        validate_release_workflow(document)
+
+
 def test_release_workflows_bind_reviewed_timeouts() -> None:
     document = _parsed_workflow()
     validate_release_workflow(document)
@@ -202,6 +254,41 @@ def test_release_lock_sync_rejects_shell_comment_decoy() -> None:
 
     with pytest.raises(ValueError, match="workflow|step|control"):
         validate_lock_sync_workflow(yaml.safe_load(changed))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "runs-on",
+        "if",
+        "outputs",
+        "environment",
+        "needs",
+        "permissions",
+        "timeout-minutes",
+        "env",
+        "key",
+        "steps",
+    ),
+)
+def test_release_lock_sync_rejects_job_control_drift(mutation: str) -> None:
+    document = yaml.safe_load(LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8"))
+    job = document["jobs"]["sync-release-lock"]
+    _mutate_job_control(job, mutation)
+    if mutation == "if":
+        job["if"] = f"true || ({job['if']})"
+
+    with pytest.raises(ValueError, match="workflow|job|control"):
+        validate_lock_sync_workflow(document)
+
+
+@pytest.mark.parametrize("step_name", ("Install pinned uv", "Synchronize root uv.lock"))
+def test_release_lock_sync_single_commands_accept_harmless_comments_and_crlf(step_name: str) -> None:
+    document = yaml.safe_load(LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8"))
+    step = next(step for step in document["jobs"]["sync-release-lock"]["steps"] if step.get("name") == step_name)
+    step["run"] = ("# harmless comment\n" + step["run"]).replace("\n", "\r\n")
+
+    validate_lock_sync_workflow(document)
 
 
 def test_release_version_anchors_require_one_synchronized_editable_lock_root(tmp_path: Path) -> None:
