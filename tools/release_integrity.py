@@ -437,6 +437,55 @@ def _named_steps(job: dict) -> dict[str, dict]:
     return named
 
 
+def _reviewed_run_step(
+    name: str,
+    *,
+    shell: str | None = None,
+    env: dict[str, object] | None = None,
+) -> dict[str, object]:
+    controls: dict[str, object] = {"name": name}
+    if shell is not None:
+        controls["shell"] = shell
+    if env is not None:
+        controls["env"] = env
+    return controls
+
+
+def _reviewed_action_step(
+    uses: str,
+    *,
+    name: str | None = None,
+    step_id: str | None = None,
+    with_: dict[str, object] | None = None,
+) -> dict[str, object]:
+    controls: dict[str, object] = {"uses": uses}
+    if name is not None:
+        controls["name"] = name
+    if step_id is not None:
+        controls["id"] = step_id
+    if with_ is not None:
+        controls["with"] = with_
+    return controls
+
+
+def _require_reviewed_step_controls(
+    named: dict[str, dict],
+    expected: dict[str, dict[str, object]],
+) -> None:
+    if set(named) != set(expected):
+        raise ValueError("release workflow reviewed step control set has drifted")
+    for identity, reviewed in expected.items():
+        step = named[identity]
+        if "uses" in reviewed:
+            actual = step
+        else:
+            if not isinstance(step.get("run"), str):
+                raise ValueError(f"release workflow run step has drifted: {identity}")
+            actual = {key: value for key, value in step.items() if key != "run"}
+        if actual != reviewed:
+            raise ValueError(f"release workflow step controls have drifted: {identity}")
+
+
 def _shell_commands(step: dict) -> list[tuple[str, ...]]:
     run = step.get("run")
     if not isinstance(run, str):
@@ -598,6 +647,136 @@ def validate_release_workflow(workflow: object) -> None:
         if not isinstance(steps, list) or [_step_identity(step) for step in steps] != expected:
             raise ValueError(f"release workflow step order has drifted in job {name}")
         named_by_job[name] = _named_steps(jobs[name])
+
+    checkout_action = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
+    setup_python_action = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+    release_please_action = "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"
+    upload_artifact_action = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    pypi_publish_action = "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33"
+    source_env = {
+        "GH_TOKEN": "${{ github.token }}",
+        "SOURCE_SHA": "${{ needs.release-please.outputs.source_sha }}",
+        "TAG_NAME": "${{ needs.release-please.outputs.tag_name }}",
+        "VERSION": "${{ needs.release-please.outputs.version }}",
+    }
+    artifact_env = {
+        "ARTIFACT_ID": "${{ needs.build-release-artifact.outputs.artifact_id }}",
+        "ARTIFACT_DIGEST": "${{ needs.build-release-artifact.outputs.artifact_digest }}",
+        "SOURCE_SHA": "${{ needs.release-please.outputs.source_sha }}",
+        "VERSION": "${{ needs.release-please.outputs.version }}",
+        "GH_TOKEN": "${{ github.token }}",
+    }
+    artifact_recheck_env = {
+        **artifact_env,
+        "TAG_NAME": "${{ needs.release-please.outputs.tag_name }}",
+    }
+    reviewed_step_controls = {
+        "release-please": {
+            f"uses:{release_please_action}": _reviewed_action_step(
+                release_please_action,
+                step_id="release",
+                with_={
+                    "token": "${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}",
+                    "config-file": "release-please-config.json",
+                    "manifest-file": ".release-please-manifest.json",
+                },
+            )
+        },
+        "build-release-artifact": {
+            f"uses:{checkout_action}": _reviewed_action_step(
+                checkout_action,
+                with_={
+                    "ref": "${{ needs.release-please.outputs.source_sha }}",
+                    "fetch-depth": 0,
+                    "fetch-tags": True,
+                },
+            ),
+            f"uses:{setup_python_action}": _reviewed_action_step(
+                setup_python_action,
+                with_={"python-version": "3.11"},
+            ),
+            "Verify release source": _reviewed_run_step(
+                "Verify release source",
+                shell="bash",
+                env=source_env,
+            ),
+            "Install build tools": _reviewed_run_step("Install build tools"),
+            "Build distributions once": _reviewed_run_step("Build distributions once"),
+            "Check distribution metadata": _reviewed_run_step("Check distribution metadata"),
+            "Stage exact distribution bundle": _reviewed_run_step(
+                "Stage exact distribution bundle",
+                shell="bash",
+                env={"VERSION": "${{ needs.release-please.outputs.version }}"},
+            ),
+            "Upload immutable release artifact": _reviewed_action_step(
+                upload_artifact_action,
+                name="Upload immutable release artifact",
+                step_id="upload",
+                with_={
+                    "name": "release-distributions",
+                    "path": "release-bundle",
+                    "if-no-files-found": "error",
+                    "retention-days": 7,
+                },
+            ),
+        },
+        "publish-pypi": {
+            f"uses:{checkout_action}": _reviewed_action_step(
+                checkout_action,
+                with_={"ref": "${{ needs.release-please.outputs.source_sha }}"},
+            ),
+            "Download verified release artifact": _reviewed_run_step(
+                "Download verified release artifact",
+                shell="bash",
+                env=artifact_env,
+            ),
+            "Re-fetch and verify before PyPI upload": _reviewed_run_step(
+                "Re-fetch and verify before PyPI upload",
+                shell="bash",
+                env=artifact_recheck_env,
+            ),
+            "Upload verified distributions to PyPI": _reviewed_action_step(
+                pypi_publish_action,
+                name="Upload verified distributions to PyPI",
+                with_={
+                    "packages-dir": "release-bundle/dist",
+                    "verbose": True,
+                    "print-hash": True,
+                },
+            ),
+        },
+        "attach-github-assets": {
+            f"uses:{checkout_action}": _reviewed_action_step(
+                checkout_action,
+                with_={"ref": "${{ needs.release-please.outputs.source_sha }}"},
+            ),
+            "Download verified release artifact": _reviewed_run_step(
+                "Download verified release artifact",
+                shell="bash",
+                env=artifact_env,
+            ),
+            "Re-fetch and verify before GitHub upload": _reviewed_run_step(
+                "Re-fetch and verify before GitHub upload",
+                shell="bash",
+                env=artifact_recheck_env,
+            ),
+            "Upload GitHub release assets": _reviewed_run_step(
+                "Upload GitHub release assets",
+                shell="bash",
+                env={
+                    "GH_TOKEN": "${{ github.token }}",
+                    "TAG_NAME": "${{ needs.release-please.outputs.tag_name }}",
+                },
+            ),
+            "Verify published GitHub release assets": _reviewed_run_step(
+                "Verify published GitHub release assets",
+                shell="bash",
+                env=source_env,
+            ),
+        },
+    }
+    for job_name, expected in reviewed_step_controls.items():
+        _require_reviewed_step_controls(named_by_job[job_name], expected)
 
     reviewed_release_commands = {
         "build-release-artifact": {
@@ -782,6 +961,52 @@ def validate_lock_sync_workflow(workflow: object) -> None:
     if not isinstance(steps, list) or [_step_identity(step) for step in steps] != expected_steps:
         raise ValueError("release lock workflow step order has drifted")
     named = _named_steps(job)
+    checkout_action = "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803"
+    setup_python_action = "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1"
+    _require_reviewed_step_controls(
+        named,
+        {
+            f"uses:{checkout_action}": _reviewed_action_step(
+                checkout_action,
+                with_={
+                    "ref": "${{ github.event.pull_request.head.sha }}",
+                    "fetch-depth": 0,
+                    "fetch-tags": False,
+                    "token": "${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}",
+                },
+            ),
+            f"uses:{setup_python_action}": _reviewed_action_step(
+                setup_python_action,
+                with_={"python-version": "3.11"},
+            ),
+            "Install pinned uv": _reviewed_run_step("Install pinned uv"),
+            "Validate exact release PR lease": _reviewed_run_step(
+                "Validate exact release PR lease",
+                shell="bash",
+                env={
+                    "EXPECTED_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                    "EXPECTED_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+                    "HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+                },
+            ),
+            "Synchronize root uv.lock": _reviewed_run_step("Synchronize root uv.lock"),
+            "Verify only reviewed lock change": _reviewed_run_step(
+                "Verify only reviewed lock change",
+                shell="bash",
+            ),
+            "Commit and push exact uv.lock": _reviewed_run_step(
+                "Commit and push exact uv.lock",
+                shell="bash",
+                env={
+                    "EXPECTED_BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+                    "EXPECTED_HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+                    "HEAD_REF": "${{ github.event.pull_request.head.ref }}",
+                    "EXPECTED_PR_NUMBER": "${{ github.event.pull_request.number }}",
+                    "GH_TOKEN": "${{ github.token }}",
+                },
+            ),
+        },
+    )
     _require_reviewed_command_digests(
         named,
         {
