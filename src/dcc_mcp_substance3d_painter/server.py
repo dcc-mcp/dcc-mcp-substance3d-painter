@@ -62,11 +62,20 @@ def start_server(host_dispatcher: object, port: Optional[int] = None) -> Substan
     global _server
     if _server is not None and _server.is_running:
         return _server
+    _server = None
     resolved_port = int(os.environ.get("DCC_MCP_SUBSTANCE3D_PAINTER_PORT", DEFAULT_PORT)) if port is None else port
-    _server = SubstancePainterMcpServer(host_dispatcher, resolved_port)
-    _server.register_builtin_actions()
-    _server.start()
-    return _server
+    candidate = SubstancePainterMcpServer(host_dispatcher, resolved_port)
+    try:
+        candidate.register_builtin_actions()
+        candidate.start()
+    except BaseException:
+        try:
+            candidate.stop()
+        except BaseException:
+            pass
+        raise
+    _server = candidate
+    return candidate
 
 
 def stop_server() -> None:
