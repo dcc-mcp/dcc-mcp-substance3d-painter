@@ -93,5 +93,7 @@ uv lock --check
 python -m build
 ```
 
-Releases use release-please. The `release.yml` workflow publishes through the
-`pypi` environment using PyPI Trusted Publishing.
+Releases use release-please. The `release.yml` workflow builds one verified
+wheel/sdist bundle, publishes those exact files through the `pypi` environment
+using Trusted Publishing, and attaches the same checksummed files to the GitHub
+Release.

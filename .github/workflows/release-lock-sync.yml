@@ -1,0 +1,115 @@
+name: Release lock sync
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+    branches: [main]
+    paths:
+      - ".release-please-manifest.json"
+      - "pyproject.toml"
+      - "src/dcc_mcp_substance3d_painter/__version__.py"
+      - "uv.lock"
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: release-lock-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  sync-release-lock:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'release-please--branches--main--components--dcc-mcp-substance3d-painter' &&
+      startsWith(github.event.pull_request.title, 'chore(main): release ')
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          fetch-tags: false
+          token: ${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.11"
+      - name: Install pinned uv
+        run: python -m pip install "uv==0.11.19"
+      - name: Validate exact release PR lease
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          test "$HEAD_REF" = "release-please--branches--main--components--dcc-mcp-substance3d-painter"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          remote_head="$(git ls-remote --exit-code --heads origin "refs/heads/$HEAD_REF" | awk 'NR == 1 {print $1}')"
+          remote_base="$(git ls-remote --exit-code --heads origin refs/heads/main | awk 'NR == 1 {print $1}')"
+          test "$remote_head" = "$EXPECTED_HEAD_SHA"
+          test "$remote_base" = "$EXPECTED_BASE_SHA"
+          git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/release-lock-base"
+          test "$(git rev-parse refs/remotes/origin/release-lock-base)" = "$EXPECTED_BASE_SHA"
+          test "$(git merge-base "$EXPECTED_BASE_SHA" HEAD)" = "$EXPECTED_BASE_SHA"
+          git diff --name-only "$EXPECTED_BASE_SHA...HEAD" > "$RUNNER_TEMP/release-paths.txt"
+          python -B - "$RUNNER_TEMP/release-paths.txt" <<'PY'
+          import pathlib
+          import sys
+
+          changed = set(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines())
+          required = {
+              ".release-please-manifest.json",
+              "CHANGELOG.md",
+              "pyproject.toml",
+              "src/dcc_mcp_substance3d_painter/__version__.py",
+          }
+          if not required.issubset(changed) or not changed.issubset(required | {"uv.lock"}):
+              raise SystemExit("release PR contains an unreviewed file set")
+          PY
+          python -B tools/release_integrity.py verify-version-anchors --root .
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+      - name: Synchronize root uv.lock
+        run: uv lock
+      - name: Verify only reviewed lock change
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -B tools/release_integrity.py verify-version-anchors --root . --require-lock
+          git status --porcelain=v1 --untracked-files=all > "$RUNNER_TEMP/lock-status.txt"
+          python -B - "$RUNNER_TEMP/lock-status.txt" <<'PY'
+          import pathlib
+          import sys
+
+          changed = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
+          if changed not in ([], [" M uv.lock"]):
+              raise SystemExit("uv lock synchronization changed an unreviewed path")
+          PY
+      - name: Commit and push exact uv.lock
+        shell: bash
+        env:
+          EXPECTED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- uv.lock; then
+            echo "uv.lock is already synchronized."
+            exit 0
+          fi
+          remote_head="$(git ls-remote --exit-code --heads origin "refs/heads/$HEAD_REF" | awk 'NR == 1 {print $1}')"
+          remote_base="$(git ls-remote --exit-code --heads origin refs/heads/main | awk 'NR == 1 {print $1}')"
+          test "$remote_head" = "$EXPECTED_HEAD_SHA"
+          test "$remote_base" = "$EXPECTED_BASE_SHA"
+          test "$(git status --porcelain=v1 --untracked-files=all)" = " M uv.lock"
+          git config user.name "loonghao"
+          git config user.email "hal.long@outlook.com"
+          git add -- uv.lock
+          test "$(git diff --cached --name-only)" = "uv.lock"
+          git diff --quiet
+          git commit -m "chore(ci): sync release lock"
+          git push --force-with-lease="refs/heads/${HEAD_REF}:${EXPECTED_HEAD_SHA}" \
+            origin "HEAD:refs/heads/${HEAD_REF}"

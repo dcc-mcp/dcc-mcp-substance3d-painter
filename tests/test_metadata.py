@@ -45,15 +45,24 @@ def test_release_workflow_uses_pinned_actions_and_scoped_permissions():
         "contents": "write",
         "pull-requests": "write",
     }
-    assert jobs["build-and-publish"]["permissions"] == {
+    assert jobs["build-release-artifact"]["permissions"] == {"contents": "read"}
+    assert jobs["publish-pypi"]["permissions"] == {
+        "actions": "read",
         "contents": "read",
         "id-token": "write",
+    }
+    assert jobs["attach-github-assets"]["permissions"] == {
+        "actions": "read",
+        "contents": "write",
     }
     assert [step["uses"] for job in jobs.values() for step in job["steps"] if "uses" in step] == [
         "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
         "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
         "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
         "pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33",
+        "actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
     ]
 
 
