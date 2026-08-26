@@ -22,6 +22,25 @@ def _parsed_workflow() -> dict:
     return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
+def _mutate_execution_control(step: dict, mutation: str) -> None:
+    if mutation == "custom-shell":
+        step["shell"] = "bash {0}; echo bypass"
+    elif mutation == "continue-on-error":
+        step["continue-on-error"] = True
+    elif mutation == "if":
+        step["if"] = "${{ always() }}"
+    elif mutation == "working-directory":
+        step["working-directory"] = "/tmp/unreviewed"
+    elif mutation == "env":
+        step.setdefault("env", {})["UNREVIEWED"] = "1"
+    elif mutation == "key":
+        step["timeout-minutes"] = 1
+    elif mutation == "run":
+        step["run"] = "true"
+    else:
+        raise AssertionError(f"unknown workflow mutation: {mutation}")
+
+
 def test_release_workflow_has_one_verified_artifact_handoff() -> None:
     validate_release_workflow(_parsed_workflow())
 
@@ -69,6 +88,41 @@ def test_release_workflow_rejects_comment_decoys_and_job_drift() -> None:
         validate_release_workflow(document)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    ("custom-shell", "continue-on-error", "if", "working-directory", "env", "key", "run"),
+)
+def test_release_workflow_rejects_run_step_execution_control_drift(mutation: str) -> None:
+    document = _parsed_workflow()
+    step = document["jobs"]["publish-pypi"]["steps"][2]
+    _mutate_execution_control(step, mutation)
+
+    with pytest.raises(ValueError, match="workflow|step|control"):
+        validate_release_workflow(document)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("custom-shell", "continue-on-error", "if", "working-directory", "env", "key", "run"),
+)
+def test_release_workflow_rejects_action_step_execution_control_drift(mutation: str) -> None:
+    document = _parsed_workflow()
+    step = document["jobs"]["publish-pypi"]["steps"][0]
+    _mutate_execution_control(step, mutation)
+
+    with pytest.raises(ValueError, match="workflow|step|control"):
+        validate_release_workflow(document)
+
+
+def test_release_workflow_rejects_shell_comment_decoy() -> None:
+    source = WORKFLOW.read_text(encoding="utf-8")
+    changed = source.replace("        shell: bash\n", "        # shell: bash\n", 1)
+    assert changed != source
+
+    with pytest.raises(ValueError, match="workflow|step|control"):
+        validate_release_workflow(yaml.safe_load(changed))
+
+
 def test_release_workflows_bind_reviewed_timeouts() -> None:
     document = _parsed_workflow()
     validate_release_workflow(document)
@@ -113,6 +167,41 @@ def test_release_lock_sync_is_exact_and_fail_closed() -> None:
     push["run"] += "\ngit push --force origin HEAD\n"
     with pytest.raises(ValueError, match="workflow|lease|push|command"):
         validate_lock_sync_workflow(changed)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("custom-shell", "continue-on-error", "if", "working-directory", "env", "key", "run"),
+)
+def test_release_lock_sync_rejects_run_step_execution_control_drift(mutation: str) -> None:
+    document = yaml.safe_load(LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8"))
+    step = document["jobs"]["sync-release-lock"]["steps"][-1]
+    _mutate_execution_control(step, mutation)
+
+    with pytest.raises(ValueError, match="workflow|step|control"):
+        validate_lock_sync_workflow(document)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("custom-shell", "continue-on-error", "if", "working-directory", "env", "key", "run"),
+)
+def test_release_lock_sync_rejects_action_step_execution_control_drift(mutation: str) -> None:
+    document = yaml.safe_load(LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8"))
+    step = document["jobs"]["sync-release-lock"]["steps"][0]
+    _mutate_execution_control(step, mutation)
+
+    with pytest.raises(ValueError, match="workflow|step|control"):
+        validate_lock_sync_workflow(document)
+
+
+def test_release_lock_sync_rejects_shell_comment_decoy() -> None:
+    source = LOCK_SYNC_WORKFLOW.read_text(encoding="utf-8")
+    changed = source.replace("        shell: bash\n", "        # shell: bash\n", 1)
+    assert changed != source
+
+    with pytest.raises(ValueError, match="workflow|step|control"):
+        validate_lock_sync_workflow(yaml.safe_load(changed))
 
 
 def test_release_version_anchors_require_one_synchronized_editable_lock_root(tmp_path: Path) -> None:
