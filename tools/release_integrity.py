@@ -114,7 +114,7 @@ def write_checksum_manifest(directory: Path, version: str) -> None:
         raise ValueError("distribution set is missing files or contains extras")
     if any(not _is_regular_unlinked_file(dist / name) for name in expected):
         raise ValueError("distribution set must contain regular unlinked files")
-    directory.joinpath("SHA256SUMS").write_text(_checksum_manifest(directory, version), encoding="utf-8", newline="\n")
+    directory.joinpath("SHA256SUMS").write_bytes(_checksum_manifest(directory, version).encode("utf-8"))
 
 
 def verify_distribution_bundle(directory: Path, *, version: str) -> None:

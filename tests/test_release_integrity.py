@@ -14,6 +14,7 @@ from tools.release_integrity import (
     verify_release_source,
     verify_release_target,
     verify_workflow_artifact,
+    write_checksum_manifest,
 )
 
 SOURCE_SHA = "1" * 40
@@ -80,14 +81,7 @@ def _write_distribution_bundle(root: Path, version: str = "0.4.1") -> tuple[str,
     sdist = f"dcc_mcp_substance3d_painter-{version}.tar.gz"
     dist.joinpath(wheel).write_bytes(b"wheel")
     dist.joinpath(sdist).write_bytes(b"sdist")
-    root.joinpath("SHA256SUMS").write_text(
-        "".join(
-            f"{hashlib.sha256(dist.joinpath(name).read_bytes()).hexdigest()}  dist/{name}\n"
-            for name in sorted((wheel, sdist))
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
+    write_checksum_manifest(root, version)
     return wheel, sdist
 
 
