@@ -88,8 +88,10 @@ modes, or UI automation. The materialized-script executor validates Core's
 scoped sidecar, file identity, digest, size, encoding, and expiry before the
 fixed `main()` entry point reaches Painter's main thread. It repeats the full
 FileRef check immediately before dispatch, binds execution to the validated
-function definition, and accepts only strict portable JSON results (no NaN or
-Infinity).
+function object in host-owned state outside script globals, and accepts only
+strict portable JSON results: string-keyed plain objects, plain arrays, JSON
+scalars, and finite numbers. Source-entered failures never carry retry or
+rematerialization guidance.
 
 ## Development
 

@@ -35,7 +35,7 @@ tools:
     description: >-
       Execute one unchanged Python FileRef returned by Core materialize_script.
       Inline source, caller paths, alternate modes, links, replaced files, and non-portable JSON results are rejected.
-      The full FileRef contract is rechecked immediately before main-thread dispatch.
+      The full FileRef contract is rechecked immediately before main-thread dispatch; source-entered failures are not retried.
     input_schema:
       type: object
       additionalProperties: false
@@ -105,9 +105,6 @@ tools:
       read_only_hint: false
       destructive_hint: false
       idempotent_hint: false
-    next-tools:
-      on-failure:
-        - materialize_script
   - name: start_camera_orbit
     description: Start a timed camera orbit around an explicit scene-space center for look-development capture.
     input_schema:

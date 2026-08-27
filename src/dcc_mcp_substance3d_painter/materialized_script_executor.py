@@ -1,10 +1,12 @@
 """Execute only intact Python FileRefs produced by Core materialization."""
 
 from __future__ import annotations
+import __future__
 
 import ast
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -15,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
+from dcc_mcp_core.cancellation import DccMcpCancelledError, check_dcc_cancelled
 from dcc_mcp_core.script_materialization import default_script_materialization_root, sanitize_materialization_segment
 
 MAX_MATERIALIZED_SCRIPT_BYTES = 1024 * 1024
@@ -286,6 +289,40 @@ def _validate_contract(file_ref: Mapping[str, Any]) -> tuple[Path, bytes, str, o
     return path, body, digest[7:], script_stat
 
 
+def _future_flags(syntax: ast.Module) -> int:
+    flags = 0
+    for node in syntax.body:
+        if not isinstance(node, ast.ImportFrom) or node.module != "__future__":
+            continue
+        for imported in node.names:
+            feature = getattr(__future__, imported.name, None)
+            if feature is None:
+                _reject("script_source_invalid")
+            flags |= feature.compiler_flag
+    return flags
+
+
+def _require_strict_json(value: Any) -> None:
+    value_type = type(value)
+    if value is None or value_type in {str, bool, int}:
+        return
+    if value_type is float:
+        if not math.isfinite(value):
+            _reject("script_result_invalid", source_entered=True)
+        return
+    if value_type is list:
+        for item in value:
+            _require_strict_json(item)
+        return
+    if value_type is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                _reject("script_result_invalid", source_entered=True)
+            _require_strict_json(item)
+        return
+    _reject("script_result_invalid", source_entered=True)
+
+
 def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]:
     """Validate, snapshot, and execute one fixed Python ``main()`` contract."""
     if not isinstance(file_ref, Mapping):
@@ -308,14 +345,16 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         or arguments.kwarg is not None
     ):
         _reject("script_entrypoint_invalid")
-    bound_entrypoint = f"_dcc_mcp_validated_main_{sha256}"
-    binding = ast.Assign(
-        targets=[ast.Name(id=bound_entrypoint, ctx=ast.Store())],
-        value=ast.Name(id="main", ctx=ast.Load()),
-    )
-    ast.copy_location(binding, entrypoints[0])
-    syntax.body.insert(syntax.body.index(entrypoints[0]) + 1, binding)
-    compiled = compile(ast.fix_missing_locations(syntax), "<materialized-script>", "exec")
+    entrypoint_index = syntax.body.index(entrypoints[0])
+    flags = _future_flags(syntax)
+    prefix = ast.Module(body=syntax.body[: entrypoint_index + 1], type_ignores=syntax.type_ignores)
+    suffix = ast.Module(body=syntax.body[entrypoint_index + 1 :], type_ignores=syntax.type_ignores)
+    try:
+        compile(syntax, "<materialized-script>", "exec", dont_inherit=True)
+        compiled_prefix = compile(prefix, "<materialized-script>", "exec", flags=flags, dont_inherit=True)
+        compiled_suffix = compile(suffix, "<materialized-script>", "exec", flags=flags, dont_inherit=True)
+    except (SyntaxError, ValueError, TypeError, MemoryError):
+        _reject("script_source_invalid")
     namespace: dict[str, Any] = {
         "__builtins__": __builtins__,
         "__file__": "<materialized-script>",
@@ -331,18 +370,23 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     ):
         _reject("file_ref_identity_drift")
     try:
-        exec(compiled, namespace, namespace)
-        entrypoint = namespace.get(bound_entrypoint)
+        exec(compiled_prefix, namespace, namespace)
+        entrypoint = namespace.get("main")
         if not callable(entrypoint):
-            _reject("script_entrypoint_invalid", source_entered=True)
+            raise TypeError
+        exec(compiled_suffix, namespace, namespace)
         result = entrypoint()
-    except MaterializedScriptRejected:
-        raise
+    except DccMcpCancelledError:
+        check_dcc_cancelled()
+        _reject("script_execution_failed", source_entered=True)
+    except (SystemExit, KeyboardInterrupt, GeneratorExit):
+        _reject("script_execution_failed", source_entered=True)
     except BaseException:
         _reject("script_execution_failed", source_entered=True)
     try:
-        if not isinstance(result, Mapping) or not isinstance(result.get("success"), bool):
+        if type(result) is not dict or not isinstance(result.get("success"), bool):
             _reject("script_result_invalid", source_entered=True)
+        _require_strict_json(result)
         normalized = json.loads(json.dumps(dict(result), allow_nan=False))
     except MaterializedScriptRejected:
         raise
