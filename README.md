@@ -87,11 +87,14 @@ do not expose raw JavaScript, inline source, caller-selected paths, execution
 modes, or UI automation. The materialized-script executor validates Core's
 scoped sidecar, file identity, digest, size, encoding, and expiry before the
 fixed `main()` entry point reaches Painter's main thread. It repeats the full
-FileRef check immediately before dispatch, binds execution to the validated
-function object in host-owned state outside script globals, and accepts only
-strict portable JSON results: string-keyed plain objects, plain arrays, JSON
-scalars, and finite numbers. Source-entered failures never carry retry or
-rematerialization guidance.
+FileRef check immediately before dispatch, clones the validated function into
+host-owned state before suffix source can mutate or rebind it, and binds
+cancellation to the exact host token and job captured before source entry.
+Results accept only strict portable JSON: string-keyed plain objects, plain
+arrays, JSON scalars, and finite numbers, with maximum depth 64, 10,000 nodes,
+and 256 KiB of compact UTF-8 JSON. Validation and normalization capabilities
+remain outside script-writable state. Source-entered failures never carry retry
+or rematerialization guidance.
 
 ## Development
 

@@ -33,12 +33,15 @@ materialization sidecar, scoped path, regular-file identity, single-link
 ownership, size, UTF-8 encoding, digest, expiry, and a stable file snapshot.
 The full security and expiry check is repeated immediately before main-thread
 dispatch. Execution remains bound to the validated function definition even
-if top-level source rebinds `main`: the exact function object is held in
-host-owned state outside script globals, so enumerating, overwriting, or
-deleting synthetic-looking names cannot divert it. Results must be strict
-portable JSON with plain string-keyed objects and plain lists; tuples, custom
-mappings, non-string keys, nested NaN, and Infinity are rejected. Rejected
-contracts return stable error codes without exposing host paths.
+if top-level source rebinds `main` or mutates its visible function object: a
+host-owned clone is captured before suffix source runs. Cancellation is
+propagated only from the exact host token and job captured before source entry;
+source-installed ambient tokens are rejected as execution failures. Results
+must be strict portable JSON with plain string-keyed objects and plain lists;
+tuples, custom mappings, non-string keys, nested NaN, and Infinity are rejected.
+Host-owned validation enforces maximum container depth 64, 10,000 value nodes,
+and 256 KiB of compact UTF-8 JSON. Rejected contracts return stable error codes
+without exposing host paths.
 
 | Contract state | Result | Painter source entered |
 | --- | --- | --- |
@@ -46,7 +49,7 @@ contracts return stable error codes without exposing host paths.
 | Missing/extra fields, inline/path/mode input, wrong scope, or expired | `file_ref_invalid`, `file_ref_scope_denied`, or `file_ref_expired` | No |
 | Link, hardlink, replacement, identity, size, or digest drift | Stable `file_ref_*` integrity error | No |
 | Non-UTF-8 source, invalid syntax, or invalid fixed entry contract | Stable `script_*` error with rematerialization prompt | No |
-| Exception, forged adapter error, or invalid result after source entry | Stable `script_*` error without retry/rematerialization prompt | Yes |
+| Exception, forged adapter/cancellation error, or invalid/over-budget result after source entry | Stable `script_*` error without retry/rematerialization prompt | Yes |
 
 Create or open a project, close only a clean project, save the active project
 or save to an explicit `.spp` path, and reload its mesh through Painter's
