@@ -616,6 +616,18 @@ def test_real_mcp_route_keeps_captured_main_immune_to_function_object_mutation(m
             delattr(__import__("builtins"), marker)
 
 
+def test_real_mcp_route_keeps_captured_main_globals_immune_to_suffix_rebinding(monkeypatch, tmp_path):
+    content = (
+        "message = 'validated value'\n"
+        "def main():\n"
+        "    return {'success': True, 'message': message, 'context': {}}\n"
+        "message = 'DIVERTED_BY_SUFFIX'\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["message"] == "validated value"
+
+
 def test_real_mcp_route_rejects_source_installed_cancel_token_as_forged(monkeypatch, tmp_path):
     content = (
         "from dcc_mcp_core.cancellation import CancelToken, DccMcpCancelledError, set_cancel_token\n"
@@ -714,16 +726,46 @@ def test_real_mcp_route_enforces_exact_result_node_boundary(monkeypatch, tmp_pat
         assert result["prompt"] is None
 
 
+def _public_response_boundary_fixture(target_bytes):
+    payload_size = target_bytes
+    while True:
+        payload = "x" * payload_size
+        content = (
+            f"def main():\n    return {{'success': True, 'message': 'bytes', 'context': {{'payload': {payload!r}}}}}\n"
+        )
+        source_bytes = len(content.encode("utf-8"))
+        execution_file = {
+            "method": "validated_file_ref_snapshot",
+            "sha256": "0" * 64,
+            "bytes": source_bytes,
+        }
+        public_response = {
+            "success": True,
+            "message": "bytes",
+            "context": {
+                "payload": payload,
+                "sha256": "0" * 64,
+                "bytes": source_bytes,
+                "execution_file": execution_file,
+            },
+            "postcondition": {"verified": True, **execution_file},
+        }
+        actual_bytes = len(json.dumps(public_response, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        difference = target_bytes - actual_bytes
+        if difference == 0:
+            return content, public_response
+        payload_size += difference
+
+
 @pytest.mark.parametrize("extra_bytes", [0, 1])
-def test_real_mcp_route_enforces_exact_serialized_result_byte_boundary(monkeypatch, tmp_path, extra_bytes):
-    empty_result = {"success": True, "message": "bytes", "context": {"payload": ""}}
-    fixed_bytes = len(json.dumps(empty_result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
-    payload = "x" * (MAX_SCRIPT_RESULT_JSON_BYTES - fixed_bytes + extra_bytes)
-    content = (
-        f"def main():\n    return {{'success': True, 'message': 'bytes', 'context': {{'payload': {payload!r}}}}}\n"
-    )
+def test_real_mcp_route_enforces_exact_complete_public_response_byte_boundary(monkeypatch, tmp_path, extra_bytes):
+    target_bytes = MAX_SCRIPT_RESULT_JSON_BYTES + extra_bytes
+    content, expected_response = _public_response_boundary_fixture(target_bytes)
+    assert len(json.dumps(expected_response, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) == target_bytes
     result = _execute_through_mcp(monkeypatch, tmp_path, content)
     assert result["success"] is (extra_bytes == 0)
-    if extra_bytes:
+    if not extra_bytes:
+        assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode("utf-8")) == target_bytes
+    else:
         assert result["error"] == "script_result_invalid"
         assert result["prompt"] is None
