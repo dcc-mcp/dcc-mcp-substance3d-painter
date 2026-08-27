@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dcc_mcp_core.cancellation import DccMcpCancelledError
 from dcc_mcp_core.skill import skill_entry, skill_error
 
 from dcc_mcp_substance3d_painter.materialized_script_executor import (
@@ -16,15 +17,19 @@ def main(file_ref):
         return execute_materialized_file_ref(file_ref)
     except MaterializedScriptRejected as exc:
         if exc.source_entered:
-            return skill_error(
+            result = skill_error(
                 "Materialized script did not produce a verified result",
                 exc.code,
             )
+            result["prompt"] = None
+            return result
         return skill_error(
             "Materialized script rejected before Painter execution",
             exc.code,
             prompt="Call materialize_script again and pass its unchanged file_ref.",
         )
+    except DccMcpCancelledError:
+        raise
     except BaseException:
         return skill_error(
             "Materialized script executor failed before a verified result",

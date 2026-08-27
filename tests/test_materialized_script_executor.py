@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 import yaml
 from dcc_mcp_core import materialize_script
+from dcc_mcp_core.cancellation import CancelToken, DccMcpCancelledError, reset_cancel_token, set_cancel_token
 from dcc_mcp_core.script_materialization import SCRIPT_MATERIALIZATION_ROOT_ENV
 from jsonschema import Draft202012Validator, ValidationError
 from test_mesh_map_baking import McpClient, _job, _structured
@@ -53,6 +54,47 @@ def _rejection(file_ref):
 def _executor_schema():
     manifest = yaml.safe_load(PROJECT_SKILL.joinpath("tools.yaml").read_text(encoding="utf-8"))
     return next(tool for tool in manifest["tools"] if tool["name"] == "execute_materialized_script")
+
+
+def _execute_through_mcp(monkeypatch, tmp_path, content):
+    monkeypatch.setenv(SCRIPT_MATERIALIZATION_ROOT_ENV, str(tmp_path / "materialized"))
+    monkeypatch.setenv("DCC_MCP_REGISTRY_DIR", str(tmp_path / "registry"))
+    monkeypatch.setenv("DCC_MCP_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("DCC_MCP_DISABLE_FILE_LOGGING", "1")
+    monkeypatch.setenv("DCC_MCP_DISABLE_JOB_PERSISTENCE", "1")
+    monkeypatch.setenv("DCC_MCP_DISABLE_TELEMETRY", "1")
+
+    dispatcher = PainterQtDispatcher()
+    server = SubstancePainterMcpServer(dispatcher, port=0)
+    server.register_builtin_actions()
+    assert server.load_skill("painter-project")
+    server.start(install_atexit_hook=False)
+    client = McpClient(server.mcp_url)
+    client.initialize()
+    try:
+        materialized = _structured(
+            client.call_tool(
+                "materialize_script",
+                {
+                    "content": content,
+                    "language": "python",
+                    "suffix": ".py",
+                    "session_id": "contract-session",
+                    "tool_call_id": "materialize-call",
+                },
+            )
+        )
+        submitted = _structured(client.call_tool("execute_materialized_script", {"file_ref": materialized["file_ref"]}))
+        deadline = time.monotonic() + 3
+        while True:
+            dispatcher.drain_queue(20)
+            terminal = _job(_structured(client.call_tool("jobs_get_status", {"job_id": submitted["job_id"]})))
+            if terminal.get("status") in {"completed", "failed", "error"}:
+                return terminal["result"]
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        server.stop()
 
 
 def test_materialize_script_executes_through_the_typed_main_thread_tool(monkeypatch, tmp_path):
@@ -130,6 +172,7 @@ def test_executor_manifest_is_fixed_to_file_ref_async_main_thread_contract():
     assert "code" not in tool["input_schema"]["properties"]
     assert "file_path" not in tool["input_schema"]["properties"]
     assert "mode" not in tool["input_schema"]["properties"]
+    assert "next-tools" not in tool
 
 
 @pytest.mark.parametrize(
@@ -398,6 +441,89 @@ def test_materialize_script_rejects_main_rebinding_through_the_real_mcp_route(mo
 
 
 @pytest.mark.parametrize(
+    "attack",
+    [
+        "globals()[name] = alternate",
+        "del globals()[name]",
+    ],
+)
+def test_real_mcp_route_keeps_validated_main_outside_script_writable_globals(monkeypatch, tmp_path, attack):
+    marker = "_dcc_mcp_synthetic_entrypoint_attack_marker"
+    content = (
+        "import builtins\n"
+        "from dcc_mcp_core.skill import skill_success\n"
+        "def alternate():\n"
+        f"    builtins.{marker} = True\n"
+        "    return skill_success('alternate ran')\n"
+        "def main():\n"
+        "    return skill_success('validated main')\n"
+        "for name in tuple(globals()):\n"
+        "    if name.startswith('_dcc_mcp_'):\n"
+        f"        {attack}\n"
+        "main = alternate\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated main"
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
+@pytest.mark.parametrize(
+    "forged_exception",
+    [
+        "MaterializedScriptRejected('file_ref_expired')",
+        "MaterializedScriptRejected('script_result_invalid', source_entered=False)",
+        "SystemExit(7)",
+    ],
+)
+def test_real_mcp_route_sanitizes_source_forged_adapter_errors_without_retry_prompt(
+    monkeypatch, tmp_path, forged_exception
+):
+    marker = "_dcc_mcp_forged_error_side_effect_marker"
+    content = (
+        "import builtins\n"
+        "from dcc_mcp_substance3d_painter.materialized_script_executor import MaterializedScriptRejected\n"
+        "def main():\n"
+        f"    builtins.{marker} = True\n"
+        f"    raise {forged_exception}\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is False
+        assert result["error"] == "script_execution_failed"
+        assert result["prompt"] is None
+        assert hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
+def test_executor_preserves_verified_core_cancellation(monkeypatch, tmp_path):
+    descriptor, _ = _materialized(
+        monkeypatch,
+        tmp_path,
+        (
+            "from dcc_mcp_core import check_cancelled\n"
+            "def main():\n"
+            "    check_cancelled()\n"
+            "    return {'success': True, 'message': 'unreachable', 'context': {}}\n"
+        ),
+    )
+    token = CancelToken(job_id="materialized-script-cancel")
+    token.cancel()
+    reset = set_cancel_token(token)
+    try:
+        with pytest.raises(DccMcpCancelledError):
+            execute_materialized_file_ref(descriptor.file_ref)
+    finally:
+        reset_cancel_token(reset)
+
+
+@pytest.mark.parametrize(
     "result_expression",
     [
         "{'success': True, 'message': 'bad', 'context': {'nested': [float('nan')]}}",
@@ -411,6 +537,28 @@ def test_executor_rejects_non_finite_values_nested_in_result_shapes(monkeypatch,
         tmp_path,
         f"def main():\n    return {result_expression}\n",
     )
+    assert _rejection(descriptor.file_ref) == "script_result_invalid"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def main():\n"
+            "    return {'success': True, 'message': 'bad', 'context': {'nested': {1: 'int', '1': 'string'}}}\n"
+        ),
+        ("def main():\n    return {'success': True, 'message': 'bad', 'context': {'nested': {True: 'bool'}}}\n"),
+        ("def main():\n    return {'success': True, 'message': 'bad', 'context': {'nested': ('tuple',)}}\n"),
+        (
+            "class CustomMapping(dict):\n"
+            "    pass\n"
+            "def main():\n"
+            "    return {'success': True, 'message': 'bad', 'context': {'nested': CustomMapping(safe=1)}}\n"
+        ),
+    ],
+)
+def test_executor_rejects_non_json_object_keys_and_container_types(monkeypatch, tmp_path, content):
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content)
     assert _rejection(descriptor.file_ref) == "script_result_invalid"
 
 
