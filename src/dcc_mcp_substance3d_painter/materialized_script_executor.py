@@ -403,14 +403,15 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
 
     node_count = 0
 
-    def normalize_result(value: Any, depth: int = 1) -> tuple[Any, int]:
+    def normalize_result(value: Any, depth: int = 1, *, enforce_shape_budget: bool = True) -> tuple[Any, int]:
         nonlocal node_count
         value_kind = type_reader(value)
-        if value_kind in {dict_type, list_type} and depth > result_depth_limit:
+        if enforce_shape_budget and value_kind in {dict_type, list_type} and depth > result_depth_limit:
             reject_result()
-        node_count += 1
-        if node_count > result_node_limit:
-            reject_result()
+        if enforce_shape_budget:
+            node_count += 1
+            if node_count > result_node_limit:
+                reject_result()
         if value is None:
             return None, 4
         if value_kind is string_type:
@@ -430,7 +431,9 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             normalized_list: list[Any] = []
             byte_size = 2
             for index, item in enumerate(value):
-                normalized_item, item_size = normalize_result(item, depth + 1)
+                normalized_item, item_size = normalize_result(
+                    item, depth + 1, enforce_shape_budget=enforce_shape_budget
+                )
                 normalized_list.append(normalized_item)
                 byte_size += item_size + (1 if index else 0)
                 if byte_size > result_byte_limit:
@@ -442,7 +445,9 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             for index, (key, item) in enumerate(value.items()):
                 if type_reader(key) is not string_type:
                     reject_result()
-                normalized_item, item_size = normalize_result(item, depth + 1)
+                normalized_item, item_size = normalize_result(
+                    item, depth + 1, enforce_shape_budget=enforce_shape_budget
+                )
                 normalized_dict[key] = normalized_item
                 byte_size += json_string_size(key) + 1 + item_size + (1 if index else 0)
                 if byte_size > result_byte_limit:
@@ -463,13 +468,15 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         exposed_entrypoint = namespace.get("main")
         if not instance_check(exposed_entrypoint, function_factory):
             raise TypeError
+        entrypoint_globals = dict_type(exposed_entrypoint.__globals__)
         entrypoint = function_factory(
             exposed_entrypoint.__code__,
-            exposed_entrypoint.__globals__,
+            entrypoint_globals,
             exposed_entrypoint.__name__,
             exposed_entrypoint.__defaults__,
             exposed_entrypoint.__closure__,
         )
+        entrypoint_globals["main"] = entrypoint
         exec(compiled_suffix, namespace, namespace)
         result = entrypoint()
     except cancelled_type:
@@ -511,6 +518,12 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     context.update({"sha256": sha256, "bytes": length(body), "execution_file": execution_file})
     if normalized["success"]:
         normalized["postcondition"] = {"verified": True, **execution_file}
+    try:
+        normalized, _ = normalize_result(normalized, enforce_shape_budget=False)
+    except rejected_type:
+        raise
+    except base_exception_type:
+        reject_result()
     return normalized
 
 
