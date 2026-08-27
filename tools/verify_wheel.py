@@ -26,6 +26,10 @@ def main(argv: list[str]) -> int:
         required = {
             "dcc_mcp_substance3d_painter/_installer.py",
             "dcc_mcp_substance3d_painter/_probe_supervisor.py",
+            "dcc_mcp_substance3d_painter/materialized_script_executor.py",
+            "dcc_mcp_substance3d_painter/skills/painter-project/SKILL.md",
+            "dcc_mcp_substance3d_painter/skills/painter-project/tools.yaml",
+            "dcc_mcp_substance3d_painter/skills/painter-project/scripts/execute_materialized_script.py",
         }
         missing = required - names
         if missing:

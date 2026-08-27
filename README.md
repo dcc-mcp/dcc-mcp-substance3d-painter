@@ -86,7 +86,10 @@ The tools use Painter resource and preset URLs supplied by Painter itself. They
 do not expose raw JavaScript, inline source, caller-selected paths, execution
 modes, or UI automation. The materialized-script executor validates Core's
 scoped sidecar, file identity, digest, size, encoding, and expiry before the
-fixed `main()` entry point reaches Painter's main thread.
+fixed `main()` entry point reaches Painter's main thread. It repeats the full
+FileRef check immediately before dispatch, binds execution to the validated
+function definition, and accepts only strict portable JSON results (no NaN or
+Infinity).
 
 ## Development
 

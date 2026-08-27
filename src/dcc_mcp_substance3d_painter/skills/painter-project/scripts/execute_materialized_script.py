@@ -15,6 +15,11 @@ def main(file_ref):
     try:
         return execute_materialized_file_ref(file_ref)
     except MaterializedScriptRejected as exc:
+        if exc.source_entered:
+            return skill_error(
+                "Materialized script did not produce a verified result",
+                exc.code,
+            )
         return skill_error(
             "Materialized script rejected before Painter execution",
             exc.code,

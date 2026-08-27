@@ -31,14 +31,19 @@ by Core: no inline source, direct path, arguments, execution mode, or UI route.
 Before Painter runs the fixed `main()` entry point, the adapter verifies the
 materialization sidecar, scoped path, regular-file identity, single-link
 ownership, size, UTF-8 encoding, digest, expiry, and a stable file snapshot.
-Rejected contracts return stable error codes without exposing host paths.
+The full security and expiry check is repeated immediately before main-thread
+dispatch. Execution remains bound to the validated function definition even
+if top-level source rebinds `main`, and results must be strict portable JSON:
+nested NaN and Infinity values are rejected. Rejected contracts return stable
+error codes without exposing host paths.
 
 | Contract state | Result | Painter source entered |
 | --- | --- | --- |
-| Exact, live Core FileRef and unchanged snapshot | Script `main()` result plus digest/size postcondition | Yes |
+| Exact, live Core FileRef and unchanged snapshot | Validated `main()` result plus digest/size postcondition | Yes |
 | Missing/extra fields, inline/path/mode input, wrong scope, or expired | `file_ref_invalid`, `file_ref_scope_denied`, or `file_ref_expired` | No |
 | Link, hardlink, replacement, identity, size, or digest drift | Stable `file_ref_*` integrity error | No |
-| Non-UTF-8 source or invalid fixed entry/result contract | Stable `script_*` error | No |
+| Non-UTF-8 source, invalid syntax, or invalid fixed entry contract | Stable `script_*` error with rematerialization prompt | No |
+| Exception or invalid/non-finite result after source entry | Stable `script_*` error without retry prompt | Yes |
 
 Create or open a project, close only a clean project, save the active project
 or save to an explicit `.spp` path, and reload its mesh through Painter's

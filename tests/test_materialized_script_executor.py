@@ -27,7 +27,7 @@ PROJECT_SKILL = (
 )
 
 
-def _materialized(monkeypatch, tmp_path, content=None):
+def _materialized(monkeypatch, tmp_path, content=None, *, ttl_secs=None):
     root = tmp_path / "materialized"
     monkeypatch.setenv(SCRIPT_MATERIALIZATION_ROOT_ENV, str(root))
     descriptor = materialize_script(
@@ -37,6 +37,7 @@ def _materialized(monkeypatch, tmp_path, content=None):
         instance_id="painter-fixture",
         session_id="contract-session",
         tool_call_id="materialize-call",
+        ttl_secs=ttl_secs,
         root=root,
     )
     return descriptor, root
@@ -221,6 +222,72 @@ def test_executor_rejects_identity_drift_during_validation(monkeypatch, tmp_path
     assert path.exists()
 
 
+@pytest.mark.parametrize("mutation", ["replacement", "hardlink"])
+def test_executor_revalidates_file_identity_immediately_before_source(monkeypatch, tmp_path, mutation):
+    marker = f"_dcc_mcp_pre_dispatch_{mutation}_marker"
+    content = (
+        f"import builtins\nbuiltins.{marker} = True\n"
+        "from dcc_mcp_core.skill import skill_success\n"
+        "def main():\n    return skill_success('must not run')\n"
+    )
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+    path = Path(descriptor.file_path)
+    original_parse = executor.ast.parse
+    mutated = False
+
+    def mutate_after_parse(*args, **kwargs):
+        nonlocal mutated
+        syntax = original_parse(*args, **kwargs)
+        if mutated:
+            return syntax
+        mutated = True
+        if mutation == "replacement":
+            replacement = tmp_path / "late-replacement.py"
+            replacement.write_bytes(path.read_bytes())
+            os.replace(replacement, path)
+        else:
+            os.link(path, tmp_path / "late-owner.py")
+        return syntax
+
+    monkeypatch.setattr(executor.ast, "parse", mutate_after_parse)
+    expected = "file_ref_independent_replacement" if mutation == "replacement" else "file_ref_hardlink"
+    try:
+        assert _rejection(descriptor.file_ref) == expected
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
+def test_executor_rechecks_expiry_immediately_before_source(monkeypatch, tmp_path):
+    marker = "_dcc_mcp_pre_dispatch_expiry_marker"
+    content = (
+        f"import builtins\nbuiltins.{marker} = True\n"
+        "from dcc_mcp_core.skill import skill_success\n"
+        "def main():\n    return skill_success('must not run')\n"
+    )
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content, ttl_secs=1)
+    original_parse = executor.ast.parse
+    expired = False
+
+    def expire_after_parse(*args, **kwargs):
+        nonlocal expired
+        syntax = original_parse(*args, **kwargs)
+        if expired:
+            return syntax
+        expired = True
+        time.sleep(1.1)
+        return syntax
+
+    monkeypatch.setattr(executor.ast, "parse", expire_after_parse)
+    try:
+        assert _rejection(descriptor.file_ref) == "file_ref_expired"
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
 def test_executor_rejects_oversized_and_non_regular_files(monkeypatch, tmp_path):
     oversized, _ = _materialized(monkeypatch, tmp_path, "#" * (MAX_MATERIALIZED_SCRIPT_BYTES + 1))
     assert _rejection(oversized.file_ref) == "file_ref_too_large"
@@ -270,6 +337,81 @@ def test_fixed_entrypoint_decision_table_returns_stable_redacted_errors(monkeypa
     code = _rejection(descriptor.file_ref)
     assert code == expected
     assert "private host path" not in code
+
+
+def test_materialize_script_rejects_main_rebinding_through_the_real_mcp_route(monkeypatch, tmp_path):
+    marker = "_dcc_mcp_rebound_main_marker"
+    monkeypatch.setenv(SCRIPT_MATERIALIZATION_ROOT_ENV, str(tmp_path / "materialized"))
+    monkeypatch.setenv("DCC_MCP_REGISTRY_DIR", str(tmp_path / "registry"))
+    monkeypatch.setenv("DCC_MCP_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("DCC_MCP_DISABLE_FILE_LOGGING", "1")
+    monkeypatch.setenv("DCC_MCP_DISABLE_JOB_PERSISTENCE", "1")
+    monkeypatch.setenv("DCC_MCP_DISABLE_TELEMETRY", "1")
+
+    dispatcher = PainterQtDispatcher()
+    server = SubstancePainterMcpServer(dispatcher, port=0)
+    server.register_builtin_actions()
+    assert server.load_skill("painter-project")
+    server.start(install_atexit_hook=False)
+
+    client = McpClient(server.mcp_url)
+    client.initialize()
+    try:
+        materialized = _structured(
+            client.call_tool(
+                "materialize_script",
+                {
+                    "content": (
+                        "import builtins\n"
+                        "from dcc_mcp_core.skill import skill_success\n"
+                        "def alternate():\n"
+                        f"    builtins.{marker} = True\n"
+                        "    return skill_success('alternate ran')\n"
+                        "def main():\n"
+                        "    return skill_success('validated main')\n"
+                        "main = alternate\n"
+                    ),
+                    "language": "python",
+                    "suffix": ".py",
+                    "session_id": "contract-session",
+                    "tool_call_id": "materialize-call",
+                },
+            )
+        )
+        submitted = _structured(client.call_tool("execute_materialized_script", {"file_ref": materialized["file_ref"]}))
+        deadline = time.monotonic() + 3
+        while True:
+            dispatcher.drain_queue(20)
+            terminal = _job(_structured(client.call_tool("jobs_get_status", {"job_id": submitted["job_id"]})))
+            if terminal.get("status") in {"completed", "failed", "error"}:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+
+        assert terminal["result"]["success"] is True
+        assert terminal["result"]["message"] == "validated main"
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        server.stop()
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
+@pytest.mark.parametrize(
+    "result_expression",
+    [
+        "{'success': True, 'message': 'bad', 'context': {'nested': [float('nan')]}}",
+        "{'success': True, 'message': 'bad', 'context': {}, 'postcondition': {'value': float('inf')}}",
+        "{'success': False, 'message': 'bad', 'context': {'nested': {'value': -float('inf')}}}",
+    ],
+)
+def test_executor_rejects_non_finite_values_nested_in_result_shapes(monkeypatch, tmp_path, result_expression):
+    descriptor, _ = _materialized(
+        monkeypatch,
+        tmp_path,
+        f"def main():\n    return {result_expression}\n",
+    )
+    assert _rejection(descriptor.file_ref) == "script_result_invalid"
 
 
 def test_invalid_entrypoint_is_rejected_before_top_level_source_runs(monkeypatch, tmp_path):
