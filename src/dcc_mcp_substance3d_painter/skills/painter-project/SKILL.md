@@ -25,6 +25,21 @@ Every tool in this skill runs through Painter's main-thread bridge and returns
 a core job envelope. Use `--wait` when calling through `dcc-mcp-cli`, or poll
 `jobs_get_status` with the returned `job_id` until the job is terminal.
 
+`execute_materialized_script` is the bounded companion to Core's
+`materialize_script`. It accepts only the unchanged Python `file_ref` returned
+by Core: no inline source, direct path, arguments, execution mode, or UI route.
+Before Painter runs the fixed `main()` entry point, the adapter verifies the
+materialization sidecar, scoped path, regular-file identity, single-link
+ownership, size, UTF-8 encoding, digest, expiry, and a stable file snapshot.
+Rejected contracts return stable error codes without exposing host paths.
+
+| Contract state | Result | Painter source entered |
+| --- | --- | --- |
+| Exact, live Core FileRef and unchanged snapshot | Script `main()` result plus digest/size postcondition | Yes |
+| Missing/extra fields, inline/path/mode input, wrong scope, or expired | `file_ref_invalid`, `file_ref_scope_denied`, or `file_ref_expired` | No |
+| Link, hardlink, replacement, identity, size, or digest drift | Stable `file_ref_*` integrity error | No |
+| Non-UTF-8 source or invalid fixed entry/result contract | Stable `script_*` error | No |
+
 Create or open a project, close only a clean project, save the active project
 or save to an explicit `.spp` path, and reload its mesh through Painter's
 native callback. Lifecycle mutations fail closed unless Painter readback
