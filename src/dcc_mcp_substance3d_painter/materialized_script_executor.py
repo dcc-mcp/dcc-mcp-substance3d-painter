@@ -463,6 +463,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         or _identity(dispatch_stat) != _identity(captured_stat)
     ):
         _reject("file_ref_identity_drift")
+    result_rejection = None
     try:
         exec(compiled_prefix, namespace, namespace)
         exposed_entrypoint = namespace.get("main")
@@ -477,8 +478,17 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             exposed_entrypoint.__closure__,
         )
         entrypoint_globals["main"] = entrypoint
-        exec(compiled_suffix, namespace, namespace)
         result = entrypoint()
+        # Freeze the portable result before suffix source can mutate any shared aliases.
+        try:
+            if type_reader(result) is not dict_type or not instance_check(result.get("success"), bool_type):
+                reject_result()
+            normalized, _ = normalize_result(result)
+        except rejected_type as exc:
+            result_rejection = exc
+        except base_exception_type:
+            result_rejection = rejected_type("script_result_invalid", source_entered=True)
+        exec(compiled_suffix, namespace, namespace)
     except cancelled_type:
         cancellation_is_host_owned = (
             host_cancel_token_reader() is host_cancel_token
@@ -498,14 +508,8 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     finally:
         host_cancel_token_setter(host_cancel_token)
         host_job_setter(host_job)
-    try:
-        if type_reader(result) is not dict_type or not instance_check(result.get("success"), bool_type):
-            reject_result()
-        normalized, _ = normalize_result(result)
-    except rejected_type:
-        raise
-    except base_exception_type:
-        reject_result()
+    if result_rejection is not None:
+        raise result_rejection
     context = normalized.get("context")
     if type_reader(context) is not dict_type:
         context = {}

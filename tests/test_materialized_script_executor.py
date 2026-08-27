@@ -628,6 +628,107 @@ def test_real_mcp_route_keeps_captured_main_globals_immune_to_suffix_rebinding(m
     assert result["message"] == "validated value"
 
 
+def test_real_mcp_route_isolates_captured_main_from_suffix_mutable_dict_alias(monkeypatch, tmp_path):
+    content = (
+        "state = {'message': 'validated value'}\n"
+        "def main():\n"
+        "    return {'success': True, 'message': state['message'], 'context': {}}\n"
+        "state['message'] = 'DIVERTED_BY_SUFFIX_ALIAS'\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["message"] == "validated value"
+
+
+@pytest.mark.parametrize(
+    ("prefix", "message_expression", "suffix"),
+    [
+        ("state = ['validated value']\n", "state[0]", "state[0] = 'DIVERTED_BY_LIST_ALIAS'\n"),
+        (
+            "state = {'validated value'}\n",
+            "'validated value' if 'validated value' in state else 'DIVERTED_BY_SET_ALIAS'",
+            "state.clear()\nstate.add('DIVERTED_BY_SET_ALIAS')\n",
+        ),
+        (
+            "class MutableBox:\n"
+            "    def __init__(self):\n"
+            "        self.values = {'message': 'validated value'}\n"
+            "    def __getitem__(self, key):\n"
+            "        return self.values[key]\n"
+            "    def __setitem__(self, key, value):\n"
+            "        self.values[key] = value\n"
+            "state = MutableBox()\n",
+            "state['message']",
+            "state['message'] = 'DIVERTED_BY_CUSTOM_ALIAS'\n",
+        ),
+        (
+            "class State:\n    pass\nstate = State()\nstate.message = 'validated value'\n",
+            "state.message",
+            "state.message = 'DIVERTED_BY_OBJECT_ALIAS'\n",
+        ),
+        (
+            "import types\nstate = types.ModuleType('materialized_state')\nstate.message = 'validated value'\n",
+            "state.message",
+            "state.message = 'DIVERTED_BY_MODULE_ALIAS'\n",
+        ),
+    ],
+    ids=["list", "set", "custom-mutable", "object-attribute", "module-attribute"],
+)
+def test_real_mcp_route_isolates_captured_main_from_all_suffix_mutable_alias_shapes(
+    monkeypatch, tmp_path, prefix, message_expression, suffix
+):
+    content = (
+        prefix
+        + "def main():\n"
+        + f"    return {{'success': True, 'message': {message_expression}, 'context': {{}}}}\n"
+        + suffix
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["message"] == "validated value"
+
+
+def test_real_mcp_route_preserves_prefix_helpers_and_executes_each_source_phase_once(monkeypatch, tmp_path):
+    prefix_marker = "_dcc_mcp_materialized_prefix_execution_count"
+    suffix_marker = "_dcc_mcp_materialized_suffix_execution_count"
+    content = (
+        "import builtins\n"
+        "import json\n"
+        f"builtins.{prefix_marker} = getattr(builtins, '{prefix_marker}', 0) + 1\n"
+        "def helper():\n"
+        "    return json.loads('\"validated value\"')\n"
+        "def main():\n"
+        "    return {'success': True, 'message': helper(), 'context': {}}\n"
+        f"builtins.{suffix_marker} = getattr(builtins, '{suffix_marker}', 0) + 1\n"
+    )
+    builtins_module = __import__("builtins")
+    for marker in (prefix_marker, suffix_marker):
+        if hasattr(builtins_module, marker):
+            delattr(builtins_module, marker)
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated value"
+        assert getattr(builtins_module, prefix_marker) == 1
+        assert getattr(builtins_module, suffix_marker) == 1
+    finally:
+        for marker in (prefix_marker, suffix_marker):
+            if hasattr(builtins_module, marker):
+                delattr(builtins_module, marker)
+
+
+def test_real_mcp_route_snapshots_main_result_before_suffix_mutates_a_returned_alias(monkeypatch, tmp_path):
+    content = (
+        "state = {'message': 'validated value'}\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated', 'context': {'state': state}}\n"
+        "state['message'] = 'DIVERTED_RETURN_ALIAS'\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["context"]["state"]["message"] == "validated value"
+
+
 def test_real_mcp_route_rejects_source_installed_cancel_token_as_forged(monkeypatch, tmp_path):
     content = (
         "from dcc_mcp_core.cancellation import CancelToken, DccMcpCancelledError, set_cancel_token\n"
