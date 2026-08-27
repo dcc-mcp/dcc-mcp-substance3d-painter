@@ -34,8 +34,8 @@ tools:
   - name: execute_materialized_script
     description: >-
       Execute one unchanged Python FileRef returned by Core materialize_script.
-      Inline source, caller paths, alternate modes, links, replaced files, and non-portable JSON results are rejected.
-      The full FileRef contract is rechecked immediately before main-thread dispatch; source-entered failures are not retried.
+      Inline source, caller paths, alternate modes, links, replaced files, and non-portable or over-budget JSON results are rejected.
+      The full FileRef contract is rechecked immediately before main-thread dispatch; the validated entrypoint and host cancellation identity are isolated from source mutation, and source-entered failures are not retried.
     input_schema:
       type: object
       additionalProperties: false

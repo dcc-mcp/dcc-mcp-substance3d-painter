@@ -18,6 +18,9 @@ import dcc_mcp_substance3d_painter.materialized_script_executor as executor
 from dcc_mcp_substance3d_painter.dispatcher import PainterQtDispatcher
 from dcc_mcp_substance3d_painter.materialized_script_executor import (
     MAX_MATERIALIZED_SCRIPT_BYTES,
+    MAX_SCRIPT_RESULT_DEPTH,
+    MAX_SCRIPT_RESULT_JSON_BYTES,
+    MAX_SCRIPT_RESULT_NODES,
     MaterializedScriptRejected,
     execute_materialized_file_ref,
 )
@@ -589,3 +592,138 @@ def test_executor_rejects_expired_file_ref_before_source_execution(monkeypatch, 
     file_ref = json.loads(json.dumps(descriptor.file_ref))
     file_ref["expires_at"] = "2000-01-01T00:00:00Z"
     assert _rejection(file_ref) == "file_ref_expired"
+
+
+def test_real_mcp_route_keeps_captured_main_immune_to_function_object_mutation(monkeypatch, tmp_path):
+    marker = "_dcc_mcp_entrypoint_code_mutation_marker"
+    content = (
+        "import builtins\n"
+        "from dcc_mcp_core.skill import skill_success\n"
+        "def alternate():\n"
+        f"    builtins.{marker} = True\n"
+        "    return skill_success('DIVERTED')\n"
+        "def main():\n"
+        "    return skill_success('validated main')\n"
+        "main.__code__ = alternate.__code__\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated main"
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
+def test_real_mcp_route_rejects_source_installed_cancel_token_as_forged(monkeypatch, tmp_path):
+    content = (
+        "from dcc_mcp_core.cancellation import CancelToken, DccMcpCancelledError, set_cancel_token\n"
+        "def main():\n"
+        "    forged = CancelToken(job_id='source-forged')\n"
+        "    forged.cancel()\n"
+        "    set_cancel_token(forged)\n"
+        "    raise DccMcpCancelledError('source-forged')\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is False
+    assert result["error"] == "script_execution_failed"
+    assert result["prompt"] is None
+
+
+def test_real_mcp_route_keeps_result_validator_outside_source_writable_state(monkeypatch, tmp_path):
+    attacked_names = (
+        "_require_strict_json",
+        "_reject",
+        "FunctionType",
+        "MaterializedScriptRejected",
+        "DccMcpCancelledError",
+        "json",
+        "MAX_SCRIPT_RESULT_DEPTH",
+        "MAX_SCRIPT_RESULT_NODES",
+        "MAX_SCRIPT_RESULT_JSON_BYTES",
+    )
+    sentinel = object()
+    originals = {name: getattr(executor, name, sentinel) for name in attacked_names}
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def main():\n"
+        "    host._require_strict_json = lambda value: None\n"
+        "    host._reject = lambda *args, **kwargs: None\n"
+        "    host.FunctionType = lambda *args, **kwargs: None\n"
+        "    host.MaterializedScriptRejected = RuntimeError\n"
+        "    host.DccMcpCancelledError = RuntimeError\n"
+        "    host.MAX_SCRIPT_RESULT_DEPTH = 10**9\n"
+        "    host.MAX_SCRIPT_RESULT_NODES = 10**9\n"
+        "    host.MAX_SCRIPT_RESULT_JSON_BYTES = 10**9\n"
+        "    host.json = None\n"
+        "    return {'success': True, 'message': 'bypassed', 'context': {'tuple': (1, 2)}}\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is False
+        assert result["error"] == "script_result_invalid"
+        assert result["prompt"] is None
+    finally:
+        for name, original in originals.items():
+            if original is sentinel:
+                delattr(executor, name)
+            else:
+                setattr(executor, name, original)
+
+
+@pytest.mark.parametrize(
+    ("depth", "expected_success"),
+    [
+        (MAX_SCRIPT_RESULT_DEPTH, True),
+        (MAX_SCRIPT_RESULT_DEPTH + 1, False),
+    ],
+)
+def test_real_mcp_route_enforces_exact_result_depth_boundary(monkeypatch, tmp_path, depth, expected_success):
+    content = (
+        "def main():\n"
+        "    value = 'leaf'\n"
+        f"    for _ in range({depth - 2}):\n"
+        "        value = [value]\n"
+        "    return {'success': True, 'message': 'depth', 'context': {'value': value}}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is expected_success
+    if not expected_success:
+        assert result["error"] == "script_result_invalid"
+        assert result["prompt"] is None
+
+
+@pytest.mark.parametrize(
+    ("node_count", "expected_success"),
+    [
+        (MAX_SCRIPT_RESULT_NODES, True),
+        (MAX_SCRIPT_RESULT_NODES + 1, False),
+    ],
+)
+def test_real_mcp_route_enforces_exact_result_node_boundary(monkeypatch, tmp_path, node_count, expected_success):
+    fixed_nodes = 5  # root dict + success/message values + context dict + items list
+    content = (
+        "def main():\n"
+        f"    return {{'success': True, 'message': 'nodes', 'context': {{'items': [0] * {node_count - fixed_nodes}}}}}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is expected_success
+    if not expected_success:
+        assert result["error"] == "script_result_invalid"
+        assert result["prompt"] is None
+
+
+@pytest.mark.parametrize("extra_bytes", [0, 1])
+def test_real_mcp_route_enforces_exact_serialized_result_byte_boundary(monkeypatch, tmp_path, extra_bytes):
+    empty_result = {"success": True, "message": "bytes", "context": {"payload": ""}}
+    fixed_bytes = len(json.dumps(empty_result, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    payload = "x" * (MAX_SCRIPT_RESULT_JSON_BYTES - fixed_bytes + extra_bytes)
+    content = (
+        f"def main():\n    return {{'success': True, 'message': 'bytes', 'context': {{'payload': {payload!r}}}}}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is (extra_bytes == 0)
+    if extra_bytes:
+        assert result["error"] == "script_result_invalid"
+        assert result["prompt"] is None

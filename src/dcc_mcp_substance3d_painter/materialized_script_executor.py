@@ -13,14 +13,24 @@ import stat
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from types import FunctionType
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
-from dcc_mcp_core.cancellation import DccMcpCancelledError, check_dcc_cancelled
+from dcc_mcp_core.cancellation import (
+    DccMcpCancelledError,
+    current_cancel_token,
+    current_job,
+    set_cancel_token,
+    set_current_job,
+)
 from dcc_mcp_core.script_materialization import default_script_materialization_root, sanitize_materialization_segment
 
 MAX_MATERIALIZED_SCRIPT_BYTES = 1024 * 1024
+MAX_SCRIPT_RESULT_DEPTH = 64
+MAX_SCRIPT_RESULT_NODES = 10_000
+MAX_SCRIPT_RESULT_JSON_BYTES = 256 * 1024
 _REPARSE_POINT_ATTRIBUTE = 0x400
 _FILE_REF_KEYS = {
     "uri",
@@ -302,27 +312,6 @@ def _future_flags(syntax: ast.Module) -> int:
     return flags
 
 
-def _require_strict_json(value: Any) -> None:
-    value_type = type(value)
-    if value is None or value_type in {str, bool, int}:
-        return
-    if value_type is float:
-        if not math.isfinite(value):
-            _reject("script_result_invalid", source_entered=True)
-        return
-    if value_type is list:
-        for item in value:
-            _require_strict_json(item)
-        return
-    if value_type is dict:
-        for key, item in value.items():
-            if type(key) is not str:
-                _reject("script_result_invalid", source_entered=True)
-            _require_strict_json(item)
-        return
-    _reject("script_result_invalid", source_entered=True)
-
-
 def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]:
     """Validate, snapshot, and execute one fixed Python ``main()`` contract."""
     if not isinstance(file_ref, Mapping):
@@ -361,6 +350,106 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         "__name__": "__dcc_mcp_materialized_script__",
         "__package__": None,
     }
+    function_factory = FunctionType
+    finite_number = math.isfinite
+    rejected_type = MaterializedScriptRejected
+    result_depth_limit = MAX_SCRIPT_RESULT_DEPTH
+    result_node_limit = MAX_SCRIPT_RESULT_NODES
+    result_byte_limit = MAX_SCRIPT_RESULT_JSON_BYTES
+    type_reader = type
+    dict_type = dict
+    list_type = list
+    string_type = str
+    bool_type = bool
+    int_type = int
+    float_type = float
+    length = len
+    ordinal = ord
+    render_int = str
+    render_float = repr
+    instance_check = isinstance
+    cancelled_type = DccMcpCancelledError
+    system_exit_types = (SystemExit, KeyboardInterrupt, GeneratorExit)
+    base_exception_type = BaseException
+    host_cancel_token_reader = current_cancel_token
+    host_cancel_token_setter = set_cancel_token
+    host_job_context = current_job
+    host_job_setter = set_current_job
+    host_cancel_token = host_cancel_token_reader()
+    host_job = host_job_context.get()
+
+    def reject_result() -> None:
+        raise rejected_type("script_result_invalid", source_entered=True)
+
+    def reject_execution() -> None:
+        raise rejected_type("script_execution_failed", source_entered=True)
+
+    def json_string_size(value: str) -> int:
+        size = 2
+        try:
+            for character in value:
+                codepoint = ordinal(character)
+                if character in {'"', "\\"} or character in {"\b", "\t", "\n", "\f", "\r"}:
+                    size += 2
+                elif codepoint < 0x20:
+                    size += 6
+                else:
+                    size += length(character.encode("utf-8"))
+                if size > result_byte_limit:
+                    reject_result()
+        except UnicodeEncodeError:
+            reject_result()
+        return size
+
+    node_count = 0
+
+    def normalize_result(value: Any, depth: int = 1) -> tuple[Any, int]:
+        nonlocal node_count
+        value_kind = type_reader(value)
+        if value_kind in {dict_type, list_type} and depth > result_depth_limit:
+            reject_result()
+        node_count += 1
+        if node_count > result_node_limit:
+            reject_result()
+        if value is None:
+            return None, 4
+        if value_kind is string_type:
+            return value, json_string_size(value)
+        if value_kind is bool_type:
+            return value, 4 if value else 5
+        if value_kind is int_type:
+            try:
+                return value, length(render_int(value).encode("ascii"))
+            except (UnicodeEncodeError, ValueError):
+                reject_result()
+        if value_kind is float_type:
+            if not finite_number(value):
+                reject_result()
+            return value, length(render_float(value).encode("ascii"))
+        if value_kind is list_type:
+            normalized_list: list[Any] = []
+            byte_size = 2
+            for index, item in enumerate(value):
+                normalized_item, item_size = normalize_result(item, depth + 1)
+                normalized_list.append(normalized_item)
+                byte_size += item_size + (1 if index else 0)
+                if byte_size > result_byte_limit:
+                    reject_result()
+            return normalized_list, byte_size
+        if value_kind is dict_type:
+            normalized_dict: dict[str, Any] = {}
+            byte_size = 2
+            for index, (key, item) in enumerate(value.items()):
+                if type_reader(key) is not string_type:
+                    reject_result()
+                normalized_item, item_size = normalize_result(item, depth + 1)
+                normalized_dict[key] = normalized_item
+                byte_size += json_string_size(key) + 1 + item_size + (1 if index else 0)
+                if byte_size > result_byte_limit:
+                    reject_result()
+            return normalized_dict, byte_size
+        reject_result()
+
     dispatch_path, dispatch_body, dispatch_sha256, dispatch_stat = _validate_contract(file_ref)
     if (
         dispatch_path != path
@@ -371,37 +460,55 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         _reject("file_ref_identity_drift")
     try:
         exec(compiled_prefix, namespace, namespace)
-        entrypoint = namespace.get("main")
-        if not callable(entrypoint):
+        exposed_entrypoint = namespace.get("main")
+        if not instance_check(exposed_entrypoint, function_factory):
             raise TypeError
+        entrypoint = function_factory(
+            exposed_entrypoint.__code__,
+            exposed_entrypoint.__globals__,
+            exposed_entrypoint.__name__,
+            exposed_entrypoint.__defaults__,
+            exposed_entrypoint.__closure__,
+        )
         exec(compiled_suffix, namespace, namespace)
         result = entrypoint()
-    except DccMcpCancelledError:
-        check_dcc_cancelled()
-        _reject("script_execution_failed", source_entered=True)
-    except (SystemExit, KeyboardInterrupt, GeneratorExit):
-        _reject("script_execution_failed", source_entered=True)
-    except BaseException:
-        _reject("script_execution_failed", source_entered=True)
+    except cancelled_type:
+        cancellation_is_host_owned = (
+            host_cancel_token_reader() is host_cancel_token
+            and host_job_context.get() is host_job
+            and (
+                (host_cancel_token is not None and bool(host_cancel_token.cancelled))
+                or (host_job is not None and bool(host_job.cancelled))
+            )
+        )
+        if cancellation_is_host_owned:
+            raise
+        reject_execution()
+    except system_exit_types:
+        reject_execution()
+    except base_exception_type:
+        reject_execution()
+    finally:
+        host_cancel_token_setter(host_cancel_token)
+        host_job_setter(host_job)
     try:
-        if type(result) is not dict or not isinstance(result.get("success"), bool):
-            _reject("script_result_invalid", source_entered=True)
-        _require_strict_json(result)
-        normalized = json.loads(json.dumps(dict(result), allow_nan=False))
-    except MaterializedScriptRejected:
+        if type_reader(result) is not dict_type or not instance_check(result.get("success"), bool_type):
+            reject_result()
+        normalized, _ = normalize_result(result)
+    except rejected_type:
         raise
-    except BaseException:
-        _reject("script_result_invalid", source_entered=True)
+    except base_exception_type:
+        reject_result()
     context = normalized.get("context")
-    if not isinstance(context, dict):
+    if type_reader(context) is not dict_type:
         context = {}
         normalized["context"] = context
     execution_file = {
         "method": "validated_file_ref_snapshot",
         "sha256": sha256,
-        "bytes": len(body),
+        "bytes": length(body),
     }
-    context.update({"sha256": sha256, "bytes": len(body), "execution_file": execution_file})
+    context.update({"sha256": sha256, "bytes": length(body), "execution_file": execution_file})
     if normalized["success"]:
         normalized["postcondition"] = {"verified": True, **execution_file}
     return normalized
@@ -409,6 +516,9 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
 
 __all__ = [
     "MAX_MATERIALIZED_SCRIPT_BYTES",
+    "MAX_SCRIPT_RESULT_DEPTH",
+    "MAX_SCRIPT_RESULT_JSON_BYTES",
+    "MAX_SCRIPT_RESULT_NODES",
     "MaterializedScriptRejected",
     "execute_materialized_file_ref",
 ]
