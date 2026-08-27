@@ -73,7 +73,9 @@ fixed port is required; `0` keeps automatic allocation. Standard
 
 ## Bundled skills
 
-`painter-project` provides typed tools for a complete material-authoring pass:
+`painter-project` provides typed tools for a complete material-authoring pass,
+plus `execute_materialized_script` for an unchanged Python FileRef returned by
+Core `materialize_script`:
 
 - inspect the project and texture sets;
 - create PBR fill layers;
@@ -81,7 +83,10 @@ fixed port is required; `0` keeps automatic allocation. Standard
 - list export presets, save the `.spp`, and export textures.
 
 The tools use Painter resource and preset URLs supplied by Painter itself. They
-do not expose raw JavaScript or arbitrary script execution.
+do not expose raw JavaScript, inline source, caller-selected paths, execution
+modes, or UI automation. The materialized-script executor validates Core's
+scoped sidecar, file identity, digest, size, encoding, and expiry before the
+fixed `main()` entry point reaches Painter's main thread.
 
 ## Development
 
