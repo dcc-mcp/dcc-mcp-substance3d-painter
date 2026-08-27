@@ -32,12 +32,14 @@ Before Painter runs the fixed `main()` entry point, the adapter verifies the
 materialization sidecar, scoped path, regular-file identity, single-link
 ownership, size, UTF-8 encoding, digest, expiry, and a stable file snapshot.
 The full security and expiry check is repeated immediately before main-thread
-dispatch. Execution remains bound to the validated function definition and its
-prefix globals even if suffix source rebinds either or mutates the visible
-function object: a host-owned function and globals snapshot is captured before
-suffix source runs. Cancellation is
-propagated only from the exact host token and job captured before source entry;
-source-installed ambient tokens are rejected as execution failures. Results
+dispatch. Execution remains bound to the validated function definition, its
+prefix helpers/imports, and its prefix globals. The adapter invokes that
+host-owned entrypoint and snapshots its strict JSON result before executing
+suffix source exactly once, so rebinding, object/module attributes, and mutable
+aliases in suffix source cannot change the captured behavior or result.
+Cancellation is propagated only from the exact host token and job captured
+before source entry; source-installed ambient tokens are rejected as execution
+failures. Results
 must be strict portable JSON with plain string-keyed objects and plain lists;
 tuples, custom mappings, non-string keys, nested NaN, and Infinity are rejected.
 Host-owned validation enforces maximum container depth 64, 10,000 value nodes,
@@ -47,7 +49,7 @@ contracts return stable error codes without exposing host paths.
 
 | Contract state | Result | Painter source entered |
 | --- | --- | --- |
-| Exact, live Core FileRef and unchanged snapshot | Validated `main()` result plus digest/size postcondition | Yes |
+| Exact, live Core FileRef and unchanged snapshot | Pre-suffix validated `main()` result plus digest/size postcondition; suffix still runs once | Yes |
 | Missing/extra fields, inline/path/mode input, wrong scope, or expired | `file_ref_invalid`, `file_ref_scope_denied`, or `file_ref_expired` | No |
 | Link, hardlink, replacement, identity, size, or digest drift | Stable `file_ref_*` integrity error | No |
 | Non-UTF-8 source, invalid syntax, or invalid fixed entry contract | Stable `script_*` error with rematerialization prompt | No |
