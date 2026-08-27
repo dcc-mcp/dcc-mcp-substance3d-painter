@@ -44,15 +44,16 @@ _METADATA_KEYS = {
 
 
 class MaterializedScriptRejected(ValueError):
-    """Stable, redacted rejection raised before materialized source runs."""
+    """Stable, redacted rejection with explicit source-entry semantics."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, source_entered: bool = False) -> None:
         super().__init__(code)
         self.code = code
+        self.source_entered = source_entered
 
 
-def _reject(code: str) -> None:
-    raise MaterializedScriptRejected(code)
+def _reject(code: str, *, source_entered: bool = False) -> None:
+    raise MaterializedScriptRejected(code, source_entered=source_entered)
 
 
 def _identity(value: os.stat_result) -> tuple[int, int]:
@@ -307,30 +308,46 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         or arguments.kwarg is not None
     ):
         _reject("script_entrypoint_invalid")
+    bound_entrypoint = f"_dcc_mcp_validated_main_{sha256}"
+    binding = ast.Assign(
+        targets=[ast.Name(id=bound_entrypoint, ctx=ast.Store())],
+        value=ast.Name(id="main", ctx=ast.Load()),
+    )
+    ast.copy_location(binding, entrypoints[0])
+    syntax.body.insert(syntax.body.index(entrypoints[0]) + 1, binding)
+    compiled = compile(ast.fix_missing_locations(syntax), "<materialized-script>", "exec")
     namespace: dict[str, Any] = {
         "__builtins__": __builtins__,
         "__file__": "<materialized-script>",
         "__name__": "__dcc_mcp_materialized_script__",
         "__package__": None,
     }
+    dispatch_path, dispatch_body, dispatch_sha256, dispatch_stat = _validate_contract(file_ref)
+    if (
+        dispatch_path != path
+        or dispatch_body != body
+        or dispatch_sha256 != sha256
+        or _identity(dispatch_stat) != _identity(captured_stat)
+    ):
+        _reject("file_ref_identity_drift")
     try:
-        exec(compile(body, "<materialized-script>", "exec"), namespace, namespace)
-        entrypoint = namespace.get("main")
+        exec(compiled, namespace, namespace)
+        entrypoint = namespace.get(bound_entrypoint)
         if not callable(entrypoint):
-            _reject("script_entrypoint_invalid")
+            _reject("script_entrypoint_invalid", source_entered=True)
         result = entrypoint()
     except MaterializedScriptRejected:
         raise
     except BaseException:
-        _reject("script_execution_failed")
+        _reject("script_execution_failed", source_entered=True)
     try:
         if not isinstance(result, Mapping) or not isinstance(result.get("success"), bool):
-            _reject("script_result_invalid")
-        normalized = json.loads(json.dumps(dict(result)))
+            _reject("script_result_invalid", source_entered=True)
+        normalized = json.loads(json.dumps(dict(result), allow_nan=False))
     except MaterializedScriptRejected:
         raise
     except BaseException:
-        _reject("script_result_invalid")
+        _reject("script_result_invalid", source_entered=True)
     context = normalized.get("context")
     if not isinstance(context, dict):
         context = {}
@@ -343,7 +360,6 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     context.update({"sha256": sha256, "bytes": len(body), "execution_file": execution_file})
     if normalized["success"]:
         normalized["postcondition"] = {"verified": True, **execution_file}
-    _recapture(path, captured_stat)
     return normalized
 
 

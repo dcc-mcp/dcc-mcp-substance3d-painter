@@ -83,3 +83,5 @@ def test_plugin_and_skill_contract_files_exist():
     assert not package.joinpath("painter", "plugins", f"{adapter.STARTUP_PLUGIN_MODULE}.py").exists()
     assert package.joinpath("skills", "painter-project", "SKILL.md").exists()
     assert package.joinpath("skills", "painter-project", "tools.yaml").exists()
+    assert package.joinpath("materialized_script_executor.py").exists()
+    assert package.joinpath("skills", "painter-project", "scripts", "execute_materialized_script.py").exists()

@@ -34,7 +34,8 @@ tools:
   - name: execute_materialized_script
     description: >-
       Execute one unchanged Python FileRef returned by Core materialize_script.
-      Inline source, caller paths, alternate modes, links, and replaced files are rejected before Painter execution.
+      Inline source, caller paths, alternate modes, links, replaced files, and non-portable JSON results are rejected.
+      The full FileRef contract is rechecked immediately before main-thread dispatch.
     input_schema:
       type: object
       additionalProperties: false
