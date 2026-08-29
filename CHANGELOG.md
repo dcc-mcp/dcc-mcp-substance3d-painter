@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.4.1...v0.5.0) (2026-08-27)
+
+
+### Features
+
+* add materialized script executor ([43d9402](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/43d9402bfef0d8ec766bcd7d24a3f5cac4c119a0))
+
+
+### Bug Fixes
+
+* harden materialized result isolation ([bb44be9](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/bb44be963b1d57eef6efc9d51b819fbee53277bd))
+* harden materialized script dispatch ([42892b8](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/42892b8735aba172e0f3226f2f6c7ff5e371c0bf))
+* isolate materialized response state ([d22078c](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/d22078cca0f51d1b61bd007577c962ecced911b1))
+* isolate materialized script execution ([7459051](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/7459051c973dff8460ca78ce09165eef403cae68))
+
 ## [0.4.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.4.0...v0.4.1) (2026-08-26)
 
 
