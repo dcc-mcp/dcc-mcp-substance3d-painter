@@ -28,6 +28,8 @@ from dcc_mcp_core.cancellation import (
 )
 from dcc_mcp_core.script_materialization import default_script_materialization_root, sanitize_materialization_segment
 
+from ._result_validator import normalize_result as _HOST_RESULT_NORMALIZER
+
 logger = logging.getLogger(__name__)
 
 MAX_MATERIALIZED_SCRIPT_BYTES = 1024 * 1024
@@ -338,6 +340,135 @@ def _execute_suffix(compiled_suffix: Any, namespace: dict[str, Any]) -> None:
     exec(compiled_suffix, namespace, namespace)
 
 
+def _suffix_written_names(suffix: ast.Module) -> set[str]:
+    """Return top-level names mutated by the side-effect-only suffix.
+
+    Function and class bodies are deliberately not traversed: their stores are
+    deferred until a call and do not initialize the namespace during the
+    suffix pass.  Attribute and subscript assignments are attributed to their
+    root name (``state['key'] = value`` therefore records ``state``).
+    """
+
+    written: set[str] = set()
+
+    class _Writer(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            return
+
+        def visit_Name(self, node: ast.Name) -> None:  # noqa: N802
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                written.add(node.id)
+
+        def visit_Attribute(self, node: ast.Attribute) -> None:  # noqa: N802
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                root: ast.expr = node.value
+                while isinstance(root, (ast.Attribute, ast.Subscript)):
+                    root = root.value
+                if isinstance(root, ast.Name):
+                    written.add(root.id)
+                return
+            self.generic_visit(node)
+
+        def visit_Subscript(self, node: ast.Subscript) -> None:  # noqa: N802
+            if isinstance(node.ctx, (ast.Store, ast.Del)):
+                root: ast.expr = node.value
+                while isinstance(root, (ast.Attribute, ast.Subscript)):
+                    root = root.value
+                if isinstance(root, ast.Name):
+                    written.add(root.id)
+                return
+            self.generic_visit(node)
+
+    visitor = _Writer()
+    for statement in suffix.body:
+        visitor.visit(statement)
+    return written
+
+
+def _suffix_defined_names(suffix: ast.Module) -> set[str]:
+    """Return names introduced by declarations/imports in the suffix."""
+
+    defined: set[str] = set()
+    for statement in suffix.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defined.add(statement.name)
+        elif isinstance(statement, ast.Import):
+            for alias in statement.names:
+                defined.add(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(statement, ast.ImportFrom):
+            for alias in statement.names:
+                if alias.name != "*":
+                    defined.add(alias.asname or alias.name)
+    return defined
+
+
+def _suffix_dependency_names(
+    entrypoint: FunctionType,
+    prefix_names: frozenset[str],
+    suffix: ast.Module,
+) -> set[str]:
+    """Identify source names that a side-effect-only suffix cannot provide.
+
+    The executor intentionally invokes ``main`` before the suffix so suffix
+    code cannot alter its captured result.  A script that nevertheless needs a
+    helper/import declared only in the suffix (or relies on a suffix mutation
+    to initialize a value used by ``main``) is outside that contract.  Report
+    this explicitly instead of leaking a generic ``script_execution_failed``.
+    """
+
+    main_names = set(entrypoint.__code__.co_names)
+    missing_declarations = (main_names - set(prefix_names)) & _suffix_defined_names(suffix)
+    suffix_writes = main_names & _suffix_written_names(suffix)
+    return missing_declarations | suffix_writes
+
+
+def _bind_host_result_normalizer() -> FunctionType:
+    """Clone the host validator before materialized source is entered.
+
+    A direct module alias is still a mutable Python function object: materialized
+    code could otherwise replace its ``__code__`` or global dictionary before a
+    later validation pass.  The clone owns a minimal immutable-by-convention
+    globals mapping and captures every builtin used by the validator, so source
+    imports, ``runpy`` hooks, and adapter-module rebinding cannot alter it.
+    """
+
+    validator = _HOST_RESULT_NORMALIZER
+    validator_globals = {
+        "__builtins__": {},
+        "type": type,
+        "dict": dict,
+        "list": list,
+        "str": str,
+        "bool": bool,
+        "int": int,
+        "float": float,
+        "len": len,
+        "ord": ord,
+        "repr": repr,
+        "enumerate": enumerate,
+        "UnicodeEncodeError": UnicodeEncodeError,
+        "ValueError": ValueError,
+    }
+    clone = _FUNCTION_TYPE(
+        validator.__code__,
+        validator_globals,
+        validator.__name__,
+        validator.__defaults__,
+        validator.__closure__,
+    )
+    clone.__kwdefaults__ = dict(validator.__kwdefaults__ or {})
+    return clone
+
+
 def _normalize_result(
     value: Any,
     depth: int = 1,
@@ -483,6 +614,11 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_cancel_token = current_cancel_token()
     host_job = current_job.get()
 
+    # Bind the host-owned validator before entering materialized code.  The
+    # source may patch dynamic loaders or rebind module globals, but it cannot
+    # replace this already-captured callable used after the source frame returns.
+    host_result_normalizer = _bind_host_result_normalizer()
+
     dispatch_path, dispatch_body, dispatch_sha256, dispatch_stat = _validate_contract(file_ref)
     if (
         dispatch_path != path
@@ -495,8 +631,11 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_cancellation: BaseException | None = None
     source_entered = False
     normalized_snapshot: str | None = None
+    prefix_names: frozenset[str] = frozenset()
+    entrypoint: FunctionType | None = None
     try:
         exec(compiled_prefix, namespace, namespace)
+        prefix_names = frozenset(namespace)
         exposed_entrypoint = namespace.get("main")
         if not isinstance(exposed_entrypoint, _FUNCTION_TYPE):
             raise TypeError
@@ -534,27 +673,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
                 if type(result) is not _DICT_TYPE or not isinstance(result.get("success"), _BOOL_TYPE):
                     raise _REJECTED_TYPE("script_result_invalid", source_entered=True)
 
-                # Load the validator into a fresh, unregistered module only
-                # after source execution.  No validator object or module
-                # reference is present while materialized code runs.
-                def load_result_validator() -> Any:
-                    import runpy
-                    from pathlib import Path
-
-                    validator_path = Path((lambda: None).__code__.co_filename).with_name("_result_validator.py")
-                    loaded = runpy.run_path(str(validator_path), run_name="__dcc_mcp_result_validator__")
-                    validator = loaded.get("normalize_result")
-                    if not callable(validator):
-                        raise TypeError
-                    return validator
-
-                try:
-                    isolated_validator = load_result_validator()
-                    normalized, _ = isolated_validator(result)
-                finally:
-                    if "isolated_validator" in locals():
-                        del isolated_validator
-                    del load_result_validator
+                normalized, _ = host_result_normalizer(result)
                 normalized_snapshot = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
             except _REJECTED_TYPE as exc:
                 result_rejection = exc
@@ -591,6 +710,19 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         except BaseException:
             logger.warning("Materialized suffix failed after source entry; preserving main outcome.")
 
+    if (
+        result_rejection is not None
+        and getattr(result_rejection, "code", None) == "script_execution_failed"
+        and entrypoint is not None
+    ):
+        suffix_dependencies = _suffix_dependency_names(entrypoint, prefix_names, suffix)
+        if suffix_dependencies:
+            logger.warning(
+                "Materialized main depends on side-effect-only suffix names: %s",
+                ", ".join(sorted(suffix_dependencies)),
+            )
+            result_rejection = _REJECTED_TYPE("script_suffix_dependency", source_entered=True)
+
     if host_cancellation is not None:
         raise host_cancellation
     if result_rejection is not None:
@@ -611,26 +743,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     if normalized["success"]:
         normalized["postcondition"] = {"verified": True, **execution_file}
     try:
-        # Recreate the unregistered validator after suffix side effects so the
-        # suffix cannot retain or mutate the first validation callable.
-        def load_postprocess_validator() -> Any:
-            import runpy
-            from pathlib import Path
-
-            validator_path = Path((lambda: None).__code__.co_filename).with_name("_result_validator.py")
-            loaded = runpy.run_path(str(validator_path), run_name="__dcc_mcp_result_validator__")
-            validator = loaded.get("normalize_result")
-            if not callable(validator):
-                raise TypeError
-            return validator
-
-        try:
-            isolated_postprocess_validator = load_postprocess_validator()
-            normalized, _ = isolated_postprocess_validator(normalized, enforce_shape_budget=False)
-        finally:
-            if "isolated_postprocess_validator" in locals():
-                del isolated_postprocess_validator
-            del load_postprocess_validator
+        normalized, _ = host_result_normalizer(normalized, enforce_shape_budget=False)
     except _REJECTED_TYPE:
         raise
     except BaseException:
