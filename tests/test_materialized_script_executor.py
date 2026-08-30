@@ -452,15 +452,15 @@ def test_materialize_script_rejects_main_rebinding_through_the_real_mcp_route(mo
 
 def test_executor_uses_host_entrypoint_boundary_captured_before_prefix(monkeypatch, tmp_path):
     """Prefix code cannot replace the host callable that invokes fixed main()."""
-    marker = "_dcc_mcp_rebound_host_invoker_marker"
+    original_function_type = executor._FUNCTION_TYPE
+    assert original_function_type is type(lambda: None)
     content = (
-        "import builtins\n"
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
-        "def forged(entrypoint):\n"
-        f"    builtins.{marker} = True\n"
-        "    return {'success': True, 'message': 'forged', 'context': {}}\n"
-        "host.execute_materialized_file_ref.__globals__['_invoke_entrypoint'] = forged\n"
+        "assert '_FUNCTION_TYPE' in host.__dict__\n"
+        "assert host._FUNCTION_TYPE is type(lambda: None)\n"
+        "assert host._FUNCTION_TYPE.__call__ is type(lambda: None).__call__\n"
+        "host._FUNCTION_TYPE = None\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated main', 'context': {}}\n"
     )
@@ -468,23 +468,22 @@ def test_executor_uses_host_entrypoint_boundary_captured_before_prefix(monkeypat
         descriptor, _ = _materialized(monkeypatch, tmp_path, content)
         result = execute_materialized_file_ref(descriptor.file_ref)
         assert result["message"] == "validated main"
-        assert not hasattr(__import__("builtins"), marker)
+        assert executor._FUNCTION_TYPE is original_function_type
     finally:
-        if hasattr(__import__("builtins"), marker):
-            delattr(__import__("builtins"), marker)
+        executor._FUNCTION_TYPE = original_function_type
 
 
 def test_real_mcp_route_uses_host_entrypoint_boundary_captured_before_prefix(monkeypatch, tmp_path):
     """The async Painter route also invokes the fixed main through the host boundary."""
-    marker = "_dcc_mcp_route_rebound_host_invoker_marker"
+    original_function_type = executor._FUNCTION_TYPE
+    assert original_function_type is type(lambda: None)
     content = (
-        "import builtins\n"
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
-        "def forged(entrypoint):\n"
-        f"    builtins.{marker} = True\n"
-        "    return {'success': True, 'message': 'forged', 'context': {}}\n"
-        "host.execute_materialized_file_ref.__globals__['_invoke_entrypoint'] = forged\n"
+        "assert '_FUNCTION_TYPE' in host.__dict__\n"
+        "assert host._FUNCTION_TYPE is type(lambda: None)\n"
+        "assert host._FUNCTION_TYPE.__call__ is type(lambda: None).__call__\n"
+        "host._FUNCTION_TYPE = None\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated main', 'context': {}}\n"
     )
@@ -492,10 +491,9 @@ def test_real_mcp_route_uses_host_entrypoint_boundary_captured_before_prefix(mon
         result = _execute_through_mcp(monkeypatch, tmp_path, content)
         assert result["success"] is True
         assert result["message"] == "validated main"
-        assert not hasattr(__import__("builtins"), marker)
+        assert executor._FUNCTION_TYPE is original_function_type
     finally:
-        if hasattr(__import__("builtins"), marker):
-            delattr(__import__("builtins"), marker)
+        executor._FUNCTION_TYPE = original_function_type
 
 
 @pytest.mark.parametrize(
@@ -1306,36 +1304,34 @@ def test_real_mcp_route_rejects_suffix_only_main_dependencies_with_stable_error(
 
 
 def test_executor_rejects_over_budget_result_when_source_rebinds_module_validator(monkeypatch, tmp_path):
-    original_validator = executor._normalize_result
-    missing = object()
-    original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    assert callable(original_alias)
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert callable(host._HOST_RESULT_NORMALIZER)\n"
         "def main():\n"
-        "    host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
+        "    host._HOST_RESULT_NORMALIZER = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
         descriptor, _ = _materialized(monkeypatch, tmp_path, content)
         assert _rejection(descriptor.file_ref) == "script_result_invalid"
     finally:
-        executor._normalize_result = original_validator
-        if original_alias is missing:
-            executor.__dict__.pop("_HOST_NORMALIZE_RESULT", None)
-        else:
-            executor._HOST_NORMALIZE_RESULT = original_alias
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_real_mcp_route_rejects_over_budget_result_when_source_rebinds_module_validator(monkeypatch, tmp_path):
-    original_validator = executor._normalize_result
-    missing = object()
-    original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    assert callable(original_alias)
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert callable(host._HOST_RESULT_NORMALIZER)\n"
         "def main():\n"
-        "    host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
+        "    host._HOST_RESULT_NORMALIZER = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
@@ -1344,87 +1340,98 @@ def test_real_mcp_route_rejects_over_budget_result_when_source_rebinds_module_va
         assert result["error"] == "script_result_invalid"
         assert result["prompt"] is None
     finally:
-        executor._normalize_result = original_validator
-        if original_alias is missing:
-            executor.__dict__.pop("_HOST_NORMALIZE_RESULT", None)
-        else:
-            executor._HOST_NORMALIZE_RESULT = original_alias
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_executor_keeps_postprocessed_result_when_suffix_rebinds_module_validator(monkeypatch, tmp_path):
-    original_validator = executor._normalize_result
-    missing = object()
-    original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    assert callable(original_alias)
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert callable(host._HOST_RESULT_NORMALIZER)\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
-        "host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
+        "host._HOST_RESULT_NORMALIZER = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
+    )
+    over_budget = (
+        "def main():\n    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
-        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        descriptor, _ = _materialized(monkeypatch, tmp_path / "first", content)
         result = execute_materialized_file_ref(descriptor.file_ref)
         assert result["message"] == "validated"
         assert result["context"]["sha256"] == descriptor.sha256
         assert result["postcondition"]["verified"] is True
+        second, _ = _materialized(monkeypatch, tmp_path / "second", over_budget)
+        assert _rejection(second.file_ref) == "script_result_invalid"
     finally:
-        executor._normalize_result = original_validator
-        if original_alias is missing:
-            executor.__dict__.pop("_HOST_NORMALIZE_RESULT", None)
-        else:
-            executor._HOST_NORMALIZE_RESULT = original_alias
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_real_mcp_route_keeps_postprocessed_result_when_suffix_rebinds_module_validator(monkeypatch, tmp_path):
-    original_validator = executor._normalize_result
-    missing = object()
-    original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    assert callable(original_alias)
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert callable(host._HOST_RESULT_NORMALIZER)\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
-        "host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
+        "host._HOST_RESULT_NORMALIZER = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
+    )
+    over_budget = (
+        "def main():\n    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
-        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        result = _execute_through_mcp(monkeypatch, tmp_path / "first", content)
         assert result["success"] is True
         assert result["message"] == "validated"
         assert result["context"]["execution_file"]["method"] == "validated_file_ref_snapshot"
         assert result["postcondition"]["verified"] is True
+        second = _execute_through_mcp(monkeypatch, tmp_path / "second", over_budget)
+        assert second["success"] is False
+        assert second["error"] == "script_result_invalid"
+        assert second["prompt"] is None
     finally:
-        executor._normalize_result = original_validator
-        if original_alias is missing:
-            executor.__dict__.pop("_HOST_NORMALIZE_RESULT", None)
-        else:
-            executor._HOST_NORMALIZE_RESULT = original_alias
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_executor_rejects_over_budget_result_when_source_mutates_validator_defaults(monkeypatch, tmp_path):
-    original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    original_defaults = dict(original_alias.__kwdefaults__ or {})
+    assert original_defaults.get("enforce_shape_budget") is True
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] is True\n"
         "def main():\n"
-        "    host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
+        "    host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] = False\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
         descriptor, _ = _materialized(monkeypatch, tmp_path, content)
         assert _rejection(descriptor.file_ref) == "script_result_invalid"
     finally:
-        executor._normalize_result.__kwdefaults__.clear()
-        executor._normalize_result.__kwdefaults__.update(original_defaults)
+        original_alias.__kwdefaults__.clear()
+        original_alias.__kwdefaults__.update(original_defaults)
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_real_mcp_route_rejects_over_budget_result_when_source_mutates_validator_defaults(monkeypatch, tmp_path):
-    original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    original_defaults = dict(original_alias.__kwdefaults__ or {})
+    assert original_defaults.get("enforce_shape_budget") is True
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] is True\n"
         "def main():\n"
-        "    host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
+        "    host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] = False\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
@@ -1433,48 +1440,71 @@ def test_real_mcp_route_rejects_over_budget_result_when_source_mutates_validator
         assert result["error"] == "script_result_invalid"
         assert result["prompt"] is None
     finally:
-        executor._normalize_result.__kwdefaults__.clear()
-        executor._normalize_result.__kwdefaults__.update(original_defaults)
+        original_alias.__kwdefaults__.clear()
+        original_alias.__kwdefaults__.update(original_defaults)
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_executor_keeps_postprocessed_result_when_suffix_mutates_validator_defaults(monkeypatch, tmp_path):
-    original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    original_defaults = dict(original_alias.__kwdefaults__ or {})
+    assert original_defaults.get("enforce_shape_budget") is True
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] is True\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
-        "host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
+        "host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] = False\n"
+    )
+    over_budget = (
+        "def main():\n    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
-        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        descriptor, _ = _materialized(monkeypatch, tmp_path / "first", content)
         result = execute_materialized_file_ref(descriptor.file_ref)
         assert result["message"] == "validated"
         assert result["context"]["sha256"] == descriptor.sha256
         assert result["postcondition"]["verified"] is True
+        second, _ = _materialized(monkeypatch, tmp_path / "second", over_budget)
+        assert _rejection(second.file_ref) == "script_result_invalid"
     finally:
-        executor._normalize_result.__kwdefaults__.clear()
-        executor._normalize_result.__kwdefaults__.update(original_defaults)
+        original_alias.__kwdefaults__.clear()
+        original_alias.__kwdefaults__.update(original_defaults)
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 def test_real_mcp_route_keeps_postprocessed_result_when_suffix_mutates_validator_defaults(monkeypatch, tmp_path):
-    original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
+    original_alias = executor._HOST_RESULT_NORMALIZER
+    original_defaults = dict(original_alias.__kwdefaults__ or {})
+    assert original_defaults.get("enforce_shape_budget") is True
     content = (
         "import sys\n"
         "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
+        "assert '_HOST_RESULT_NORMALIZER' in host.__dict__\n"
+        "assert host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] is True\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
-        "host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
+        "host._HOST_RESULT_NORMALIZER.__kwdefaults__['enforce_shape_budget'] = False\n"
+    )
+    over_budget = (
+        "def main():\n    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
     )
     try:
-        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        result = _execute_through_mcp(monkeypatch, tmp_path / "first", content)
         assert result["success"] is True
         assert result["message"] == "validated"
         assert result["context"]["execution_file"]["method"] == "validated_file_ref_snapshot"
         assert result["postcondition"]["verified"] is True
+        second = _execute_through_mcp(monkeypatch, tmp_path / "second", over_budget)
+        assert second["success"] is False
+        assert second["error"] == "script_result_invalid"
+        assert second["prompt"] is None
     finally:
-        executor._normalize_result.__kwdefaults__.clear()
-        executor._normalize_result.__kwdefaults__.update(original_defaults)
+        original_alias.__kwdefaults__.clear()
+        original_alias.__kwdefaults__.update(original_defaults)
+        executor._HOST_RESULT_NORMALIZER = original_alias
 
 
 @pytest.mark.parametrize(
