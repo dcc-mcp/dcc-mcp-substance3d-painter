@@ -1498,3 +1498,221 @@ def test_real_mcp_route_enforces_exact_complete_public_response_byte_boundary(mo
     else:
         assert result["error"] == "script_result_invalid"
         assert result["prompt"] is None
+
+
+@pytest.mark.parametrize("serializer", ["encoder", "decoder"])
+def test_executor_isolates_json_serializer_internals_from_materialized_source(monkeypatch, tmp_path, serializer):
+    """Source cannot replace the host JSON encoder/decoder used after main()."""
+    if serializer == "encoder":
+        content = (
+            "import json\n"
+            "_OriginalEncoder = json.JSONEncoder\n"
+            "class EvilEncoder(_OriginalEncoder):\n"
+            "    def encode(self, value):\n"
+            "        json.JSONEncoder = _OriginalEncoder\n"
+            '        return \'{"success":true,"message":"forged","context":{"items":[\' + \',\'.join([\'0\'] * 20000) + \']}}\'\n'
+            "json.JSONEncoder = EvilEncoder\n"
+            "def main():\n"
+            "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+        )
+    else:
+        content = (
+            "import json\n"
+            "_OriginalDecoder = json._default_decoder\n"
+            "class EvilDecoder:\n"
+            "    def decode(self, value, **kwargs):\n"
+            "        json._default_decoder = _OriginalDecoder\n"
+            "        return {'success': True, 'message': 'forged', 'context': {'items': [0] * 20000}}\n"
+            "json._default_decoder = EvilDecoder()\n"
+            "def main():\n"
+            "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+        )
+    original_encoder = json.JSONEncoder
+    original_decoder = json._default_decoder
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["success"] is True
+        assert result["message"] == "validated"
+        assert "items" not in result["context"]
+    finally:
+        json.JSONEncoder = original_encoder
+        json._default_decoder = original_decoder
+
+
+@pytest.mark.parametrize("serializer", ["encoder", "decoder"])
+def test_real_mcp_route_isolates_json_serializer_internals_from_materialized_source(monkeypatch, tmp_path, serializer):
+    """The public Painter route must reject serializer-internal result forgeries."""
+    if serializer == "encoder":
+        content = (
+            "import json\n"
+            "_OriginalEncoder = json.JSONEncoder\n"
+            "class EvilEncoder(_OriginalEncoder):\n"
+            "    def encode(self, value):\n"
+            "        json.JSONEncoder = _OriginalEncoder\n"
+            '        return \'{"success":true,"message":"forged","context":{"items":[\' + \',\'.join([\'0\'] * 20000) + \']}}\'\n'
+            "json.JSONEncoder = EvilEncoder\n"
+            "def main():\n"
+            "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+        )
+    else:
+        content = (
+            "import json\n"
+            "_OriginalDecoder = json._default_decoder\n"
+            "class EvilDecoder:\n"
+            "    def decode(self, value, **kwargs):\n"
+            "        json._default_decoder = _OriginalDecoder\n"
+            "        return {'success': True, 'message': 'forged', 'context': {'items': [0] * 20000}}\n"
+            "json._default_decoder = EvilDecoder()\n"
+            "def main():\n"
+            "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+        )
+    original_encoder = json.JSONEncoder
+    original_decoder = json._default_decoder
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated"
+        assert "items" not in result["context"]
+    finally:
+        json.JSONEncoder = original_encoder
+        json._default_decoder = original_decoder
+
+
+def test_executor_prevents_delayed_source_thread_from_poisoning_json_serializer_state(monkeypatch, tmp_path):
+    """A source-created daemon cannot rebind host JSON state after return."""
+    content = (
+        "import json\n"
+        "import threading\n"
+        "import time\n"
+        "_OriginalEncoder = json.JSONEncoder\n"
+        "class EvilEncoder(_OriginalEncoder):\n"
+        "    pass\n"
+        "def poison():\n"
+        "    time.sleep(0.05)\n"
+        "    json.JSONEncoder = EvilEncoder\n"
+        "def main():\n"
+        "    threading.Thread(target=poison, daemon=True).start()\n"
+        "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+    )
+    original_encoder = json.JSONEncoder
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["message"] == "validated"
+        time.sleep(0.1)
+        assert json.JSONEncoder is original_encoder
+    finally:
+        json.JSONEncoder = original_encoder
+
+
+def test_real_mcp_route_prevents_delayed_source_thread_from_poisoning_json_serializer_state(monkeypatch, tmp_path):
+    """The MCP route must remain isolated after a source daemon outlives main()."""
+    content = (
+        "import json\n"
+        "import threading\n"
+        "import time\n"
+        "_OriginalEncoder = json.JSONEncoder\n"
+        "class EvilEncoder(_OriginalEncoder):\n"
+        "    pass\n"
+        "def poison():\n"
+        "    time.sleep(0.05)\n"
+        "    json.JSONEncoder = EvilEncoder\n"
+        "def main():\n"
+        "    threading.Thread(target=poison, daemon=True).start()\n"
+        "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+    )
+    original_encoder = json.JSONEncoder
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated"
+        time.sleep(0.1)
+        assert json.JSONEncoder is original_encoder
+    finally:
+        json.JSONEncoder = original_encoder
+
+
+def test_executor_isolates_json_callable_globals_from_materialized_source(monkeypatch, tmp_path):
+    """Serializer callable globals exposed to source are per-request copies."""
+    content = (
+        "import json\n"
+        "def forged_dumps(*args, **kwargs):\n"
+        '    return \'{"success":true,"message":"forged","context":{"items":[\' + \',\'.join([\'0\'] * 20000) + \']}}\'\n'
+        "json.dumps.__globals__['JSONEncoder'] = forged_dumps\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+    )
+    host_globals = json.dumps.__globals__
+    original = host_globals.get("JSONEncoder")
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["message"] == "validated"
+        assert host_globals.get("JSONEncoder") is original
+    finally:
+        if original is None:
+            host_globals.pop("JSONEncoder", None)
+        else:
+            host_globals["JSONEncoder"] = original
+
+
+def test_real_mcp_route_isolates_json_callable_globals_from_materialized_source(monkeypatch, tmp_path):
+    """The public route does not expose canonical ``json.loads`` globals."""
+    content = (
+        "import json\n"
+        "class EvilDecoder:\n"
+        "    def decode(self, value, **kwargs):\n"
+        "        return {'success': True, 'message': 'forged', 'context': {'items': [0] * 20000}}\n"
+        "json.loads.__globals__['_default_decoder'] = EvilDecoder()\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+    )
+    host_globals = json.loads.__globals__
+    original = host_globals.get("_default_decoder")
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated"
+        assert host_globals.get("_default_decoder") is original
+    finally:
+        if original is None:
+            host_globals.pop("_default_decoder", None)
+        else:
+            host_globals["_default_decoder"] = original
+
+
+def _freeze_snapshot_frame_walk_attack():
+    return (
+        "import sys\n"
+        "result = {'success': True, 'message': 'validated', 'context': {'items': []}}\n"
+        "def main():\n"
+        "    frame = sys._getframe(1)\n"
+        "    while frame is not None:\n"
+        "        freezer = frame.f_locals.get('freeze_snapshot')\n"
+        "        if freezer is not None:\n"
+        "            def preserve_alias(value):\n"
+        "                return ('atom', value)\n"
+        "            freezer.__closure__[0].cell_contents = preserve_alias\n"
+        "            break\n"
+        "        frame = frame.f_back\n"
+        "    return result\n"
+        "result['context']['items'] = [0] * 20000\n"
+    )
+
+
+def test_executor_preserves_snapshot_after_frame_walk_mutates_snapshot_freezer(monkeypatch, tmp_path):
+    """The host snapshot boundary must not expose a source-mutable Python callable."""
+    descriptor, _ = _materialized(monkeypatch, tmp_path, _freeze_snapshot_frame_walk_attack())
+    result = execute_materialized_file_ref(descriptor.file_ref)
+    assert result["success"] is True
+    assert result["message"] == "validated"
+    assert result["context"]["items"] == []
+
+
+def test_real_mcp_route_preserves_snapshot_after_frame_walk_mutates_snapshot_freezer(monkeypatch, tmp_path):
+    """The public route must preserve the result node budget after the same attack."""
+    result = _execute_through_mcp(monkeypatch, tmp_path, _freeze_snapshot_frame_walk_attack())
+    assert result["success"] is True
+    assert result["message"] == "validated"
+    assert result["context"]["items"] == []

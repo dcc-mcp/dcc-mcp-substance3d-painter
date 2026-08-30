@@ -4,17 +4,21 @@ from __future__ import annotations
 import __future__
 
 import ast
+import builtins
 import hashlib
+import importlib.util
 import json
 import logging
+import marshal
 import math
 import os
 import re
 import stat
+import sys
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
-from types import FunctionType, MappingProxyType
+from types import FunctionType, MappingProxyType, ModuleType
 from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
@@ -59,6 +63,32 @@ _METADATA_KEYS = {
     "suffix",
     "materialization_kind",
 }
+_HOST_SNAPSHOT_API = (marshal.dumps, marshal.loads)
+_JSON_PACKAGE_FILE = json.__file__
+_JSON_PACKAGE_PATH = tuple(json.__path__)
+
+
+def _new_isolated_json_module() -> ModuleType:
+    """Load a complete request-private copy of the standard-library JSON package."""
+
+    isolation_token = object()
+    package_name = f"_dcc_mcp_isolated_json_{os.getpid()}_{id(isolation_token)}"
+    spec = importlib.util.spec_from_file_location(
+        package_name,
+        _JSON_PACKAGE_FILE,
+        submodule_search_locations=list(_JSON_PACKAGE_PATH),
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("standard-library JSON package is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[package_name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        for loaded_name in tuple(sys.modules):
+            if loaded_name == package_name or loaded_name.startswith(f"{package_name}."):
+                sys.modules.pop(loaded_name, None)
+    return module
 
 
 class MaterializedScriptRejected(ValueError):
@@ -569,12 +599,32 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         compiled_suffix = compile(suffix, "<materialized-script>", "exec", flags=flags, dont_inherit=True)
     except (SyntaxError, ValueError, TypeError, MemoryError):
         _reject("script_source_invalid")
+    isolated_json = _new_isolated_json_module()
+    original_import = builtins.__import__
+
+    def isolated_import(
+        name: str, globals: Any = None, locals: Any = None, fromlist: tuple[str, ...] = (), level: int = 0
+    ):
+        if level == 0 and (name == "json" or name.startswith("json.")):
+            return isolated_json
+        return original_import(name, globals, locals, fromlist, level)
+
+    materialized_builtins = dict(vars(builtins))
+    materialized_builtins["__import__"] = isolated_import
     namespace: dict[str, Any] = {
-        "__builtins__": __builtins__,
+        "__builtins__": materialized_builtins,
         "__file__": "<materialized-script>",
         "__name__": "__dcc_mcp_materialized_script__",
         "__package__": None,
     }
+
+    # Capture the C-backed serializer functions before entering source code.
+    # ``marshal.dumps`` produces immutable bytes from the already-normalized
+    # JSON-shaped result and exposes no Python ``__code__``/closure for a
+    # materialized frame walk to rewrite.  The bytes are decoded only after the
+    # side-effect-only suffix has finished, so neither source aliases nor suffix
+    # frame locals can mutate the host-owned snapshot.
+    host_snapshot_api = _HOST_SNAPSHOT_API
 
     # Capture host cancellation state before entering materialized source.  Use
     # the ContextVar objects directly rather than the imported Python setter
@@ -600,6 +650,25 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_json_module = json
     host_json_dumps = host_json_module.dumps
     host_json_loads = host_json_module.loads
+    host_json_encoder = host_json_module.JSONEncoder
+    host_json_decoder = host_json_module.JSONDecoder
+    host_json_default_encoder = host_json_module._default_encoder
+    host_json_default_decoder = host_json_module._default_decoder
+    host_json_encoder_module = host_json_module.encoder
+    host_json_decoder_module = host_json_module.decoder
+    host_json_encoder_module_encoder = host_json_encoder_module.JSONEncoder
+    host_json_decoder_module_decoder = host_json_decoder_module.JSONDecoder
+
+    def restore_host_json() -> None:
+        host_json_module.dumps = host_json_dumps
+        host_json_module.loads = host_json_loads
+        host_json_module.JSONEncoder = host_json_encoder
+        host_json_module.JSONDecoder = host_json_decoder
+        host_json_module._default_encoder = host_json_default_encoder
+        host_json_module._default_decoder = host_json_default_decoder
+        host_json_encoder_module.JSONEncoder = host_json_encoder_module_encoder
+        host_json_decoder_module.JSONDecoder = host_json_decoder_module_decoder
+
     host_function_type = _FUNCTION_TYPE
     host_dict_type = _DICT_TYPE
     host_bool_type = _BOOL_TYPE
@@ -652,7 +721,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     result_rejection: BaseException | None = None
     host_cancellation: BaseException | None = None
     source_entered = False
-    normalized_snapshot: str | None = None
+    normalized_snapshot: bytes | None = None
     prefix_names: frozenset[str] = frozenset()
     entrypoint: FunctionType | None = None
     try:
@@ -719,8 +788,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         host_module_globals["current_cancel_token"] = host_cancellation_api[2]
         host_module_globals["current_job"] = host_cancellation_api[3]
         host_module_globals["json"] = host_json_module
-        host_json_module.dumps = host_json_dumps
-        host_json_module.loads = host_json_loads
+        restore_host_json()
         cancellation_module_globals.clear()
         cancellation_module_globals.update(cancellation_module_snapshot)
         if result_rejection is None and host_cancellation is None:
@@ -751,7 +819,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
                 )
                 host_result_normalizer.__kwdefaults__ = validator_dict_type(validator_kwdefaults)
                 normalized, _ = host_result_normalizer(result)
-                normalized_snapshot = host_json_dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+                normalized_snapshot = host_snapshot_api[0](normalized)
             except host_rejected_type as exc:
                 result_rejection = exc
             except BaseException:
@@ -811,8 +879,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         host_module_globals["current_cancel_token"] = host_cancellation_api[2]
         host_module_globals["current_job"] = host_cancellation_api[3]
         host_module_globals["json"] = host_json_module
-        host_json_module.dumps = host_json_dumps
-        host_json_module.loads = host_json_loads
+        restore_host_json()
         cancellation_module_globals.clear()
         cancellation_module_globals.update(cancellation_module_snapshot)
 
@@ -855,8 +922,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             host_module_globals["current_cancel_token"] = host_cancellation_api[2]
             host_module_globals["current_job"] = host_cancellation_api[3]
             host_module_globals["json"] = host_json_module
-            host_json_module.dumps = host_json_dumps
-            host_json_module.loads = host_json_loads
+            restore_host_json()
             cancellation_module_globals.clear()
             cancellation_module_globals.update(cancellation_module_snapshot)
 
@@ -879,7 +945,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         raise result_rejection
     if normalized_snapshot is None:
         raise host_rejected_type("script_result_invalid", source_entered=True) from None
-    normalized = host_json_loads(normalized_snapshot)
+    normalized = host_snapshot_api[1](normalized_snapshot)
     context = normalized.get("context")
     if type(context) is not host_dict_type:
         context = {}
