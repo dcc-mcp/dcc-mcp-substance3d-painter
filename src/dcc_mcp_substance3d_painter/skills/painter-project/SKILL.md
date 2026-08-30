@@ -35,8 +35,10 @@ The full security and expiry check is repeated immediately before main-thread
 dispatch. Execution remains bound to the validated function definition, its
 prefix helpers/imports, and its prefix globals. The adapter invokes that
 host-owned entrypoint and snapshots its strict JSON result before executing
-suffix source exactly once, so rebinding, object/module attributes, and mutable
-aliases in suffix source cannot change the captured behavior or result.
+suffix source once in a quarantined side-effect phase, so rebinding,
+object/module attributes, and mutable aliases in suffix source cannot change the
+captured behavior or result, and suffix failures do not clobber the validated
+`main()` response.
 Cancellation is propagated only from the exact host token and job captured
 before source entry; source-installed ambient tokens are rejected as execution
 failures. Results

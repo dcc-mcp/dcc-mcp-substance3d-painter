@@ -88,10 +88,12 @@ modes, or UI automation. The materialized-script executor validates Core's
 scoped sidecar, file identity, digest, size, encoding, and expiry before the
 fixed `main()` entry point reaches Painter's main thread. It repeats the full
 FileRef check immediately before dispatch, clones and invokes the validated
-function with its prefix globals, snapshots its strict JSON result, and only
-then executes suffix source exactly once. Suffix rebinding or mutable aliases
-therefore cannot change the captured entrypoint behavior or result. Cancellation
-remains bound to the exact host token and job captured before source entry.
+function with its prefix globals, snapshots its strict JSON result, and then
+executes suffix source once in a quarantined side-effect phase. Suffix rebinding
+or mutable aliases therefore cannot change the captured entrypoint behavior or
+result, and suffix failures do not clobber the validated `main()` response.
+Cancellation remains bound to the exact host token and job captured before
+source entry.
 Results accept only strict portable JSON: string-keyed plain objects, plain
 arrays, JSON scalars, and finite numbers, with maximum depth 64, 10,000 nodes,
 and 256 KiB of compact UTF-8 JSON. The byte limit covers the complete public

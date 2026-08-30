@@ -628,6 +628,19 @@ def test_real_mcp_route_keeps_captured_main_globals_immune_to_suffix_rebinding(m
     assert result["message"] == "validated value"
 
 
+def test_real_mcp_route_keeps_frozen_main_result_immune_to_frame_locals_rebinding(monkeypatch, tmp_path):
+    content = (
+        "import sys\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated value', 'context': {'state': {'message': 'validated value'}}}\n"
+        "sys._getframe(1).f_locals['normalized']['message'] = 'DIVERTED_HOST_SNAPSHOT'\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["message"] == "validated value"
+    assert result["context"]["state"]["message"] == "validated value"
+
+
 def test_real_mcp_route_isolates_captured_main_from_suffix_mutable_dict_alias(monkeypatch, tmp_path):
     content = (
         "state = {'message': 'validated value'}\n"
@@ -715,6 +728,19 @@ def test_real_mcp_route_preserves_prefix_helpers_and_executes_each_source_phase_
         for marker in (prefix_marker, suffix_marker):
             if hasattr(builtins_module, marker):
                 delattr(builtins_module, marker)
+
+
+def test_real_mcp_route_preserves_validated_main_result_when_suffix_helper_initialization_fails(monkeypatch, tmp_path):
+    content = (
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated value', 'context': {}}\n"
+        "def helper():\n"
+        "    raise RuntimeError('suffix helper failure')\n"
+        "helper()\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["message"] == "validated value"
 
 
 def test_real_mcp_route_snapshots_main_result_before_suffix_mutates_a_returned_alias(monkeypatch, tmp_path):

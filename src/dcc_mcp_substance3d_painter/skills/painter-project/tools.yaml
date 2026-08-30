@@ -35,7 +35,7 @@ tools:
     description: >-
       Execute one unchanged Python FileRef returned by Core materialize_script.
       Inline source, caller paths, alternate modes, links, replaced files, and non-portable or over-budget complete public JSON responses are rejected.
-      The full FileRef contract is rechecked immediately before main-thread dispatch; the validated entrypoint runs and its strict result is snapshotted before suffix source executes exactly once, while host cancellation identity is isolated and source-entered failures are not retried.
+      The full FileRef contract is rechecked immediately before main-thread dispatch; the validated entrypoint runs and its strict result is snapshotted before suffix source executes once in a quarantined side-effect phase, while host cancellation identity is isolated and suffix failures do not clobber the validated result.
     input_schema:
       type: object
       additionalProperties: false

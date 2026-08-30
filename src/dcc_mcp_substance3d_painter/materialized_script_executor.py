@@ -6,6 +6,7 @@ import __future__
 import ast
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -26,6 +27,8 @@ from dcc_mcp_core.cancellation import (
     set_current_job,
 )
 from dcc_mcp_core.script_materialization import default_script_materialization_root, sanitize_materialization_segment
+
+logger = logging.getLogger(__name__)
 
 MAX_MATERIALIZED_SCRIPT_BYTES = 1024 * 1024
 MAX_SCRIPT_RESULT_DEPTH = 64
@@ -479,16 +482,20 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         )
         entrypoint_globals["main"] = entrypoint
         result = entrypoint()
-        # Freeze the portable result before suffix source can mutate any shared aliases.
         try:
             if type_reader(result) is not dict_type or not instance_check(result.get("success"), bool_type):
                 reject_result()
             normalized, _ = normalize_result(result)
+            normalized_snapshot = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
         except rejected_type as exc:
             result_rejection = exc
         except base_exception_type:
             result_rejection = rejected_type("script_result_invalid", source_entered=True)
-        exec(compiled_suffix, namespace, namespace)
+        else:
+            try:
+                exec(compiled_suffix, namespace, namespace)
+            except base_exception_type:
+                logger.warning("Materialized suffix failed after validated main result; preserving captured result.")
     except cancelled_type:
         cancellation_is_host_owned = (
             host_cancel_token_reader() is host_cancel_token
@@ -510,6 +517,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         host_job_setter(host_job)
     if result_rejection is not None:
         raise result_rejection
+    normalized = json.loads(normalized_snapshot)
     context = normalized.get("context")
     if type_reader(context) is not dict_type:
         context = {}
