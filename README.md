@@ -98,7 +98,8 @@ mutable initialization introduced only by the suffix is rejected with the
 stable `script_suffix_dependency` error, so valid scripts must define those
 dependencies before `main()`.
 Cancellation remains bound to the exact host token and job captured before
-source entry.
+source entry; the executor restores the captured host ContextVar state and
+cancellation API bindings after both source phases.
 Results accept only strict portable JSON: string-keyed plain objects, plain
 arrays, JSON scalars, and finite numbers, with maximum depth 64, 10,000 nodes,
 and 256 KiB of compact UTF-8 JSON. The byte limit covers the complete public
