@@ -39,7 +39,10 @@ suffix source exactly once after every source-entered `main()` attempt in a
 quarantined side-effect phase. Rebinding, object/module attributes, and mutable
 aliases in suffix source cannot change the captured behavior or result, and
 suffix failures do not clobber the main outcome (including a stable rejection
-for invalid results).
+for invalid results). The suffix is side-effect-only; if `main()` needs a helper,
+import, or mutable initialization introduced only by that suffix, execution
+fails closed with `script_suffix_dependency`. Define all `main()` dependencies
+before the entrypoint.
 Cancellation is propagated only from the exact host token and job captured
 before source entry; source-installed ambient tokens are rejected as execution
 failures. Results
@@ -56,6 +59,7 @@ contracts return stable error codes without exposing host paths.
 | Missing/extra fields, inline/path/mode input, wrong scope, or expired | `file_ref_invalid`, `file_ref_scope_denied`, or `file_ref_expired` | No |
 | Link, hardlink, replacement, identity, size, or digest drift | Stable `file_ref_*` integrity error | No |
 | Non-UTF-8 source, invalid syntax, or invalid fixed entry contract | Stable `script_*` error with rematerialization prompt | No |
+| `main()` depends on helper/import/state introduced only by the suffix | `script_suffix_dependency` without retry/rematerialization prompt | Yes |
 | Exception, forged adapter/cancellation error, or invalid/over-budget result after source entry | Stable `script_*` error without retry/rematerialization prompt; suffix still runs once | Yes |
 
 Create or open a project, close only a clean project, save the active project

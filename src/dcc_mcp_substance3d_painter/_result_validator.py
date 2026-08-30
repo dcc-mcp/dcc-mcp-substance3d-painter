@@ -17,6 +17,13 @@ def normalize_result(
 ) -> tuple[Any, int]:
     """Normalize one strict portable result without adapter-module globals."""
 
+    # Keep the safety budget in the validator's call-local state.  The
+    # materialized namespace can import this module, but rebinding these
+    # exported documentation constants cannot alter an in-flight validation.
+    depth_limit = 64
+    node_limit = 10_000
+    byte_limit = 256 * 1024
+
     function_type = type
     dict_type = dict
     list_type = list
@@ -48,7 +55,7 @@ def normalize_result(
                     size += 6
                 else:
                     size += length(character.encode("utf-8"))
-                if size > MAX_SCRIPT_RESULT_JSON_BYTES:
+                if size > byte_limit:
                     reject_result()
         except UnicodeEncodeError:
             reject_result()
@@ -57,11 +64,11 @@ def normalize_result(
     def normalize(item: Any, item_depth: int = 1, *, enforce_budget: bool = True) -> tuple[Any, int]:
         nonlocal node_count
         value_kind = function_type(item)
-        if enforce_budget and value_kind in {dict_type, list_type} and item_depth > MAX_SCRIPT_RESULT_DEPTH:
+        if enforce_budget and value_kind in {dict_type, list_type} and item_depth > depth_limit:
             reject_result()
         if enforce_budget:
             node_count += 1
-            if node_count > MAX_SCRIPT_RESULT_NODES:
+            if node_count > node_limit:
                 reject_result()
         if item is None:
             return None, 4
@@ -85,7 +92,7 @@ def normalize_result(
                 normalized_item, item_size = normalize(child, item_depth + 1, enforce_budget=enforce_budget)
                 normalized_list.append(normalized_item)
                 byte_size += item_size + (1 if index else 0)
-                if byte_size > MAX_SCRIPT_RESULT_JSON_BYTES:
+                if byte_size > byte_limit:
                     reject_result()
             return normalized_list, byte_size
         if value_kind is dict_type:
@@ -97,7 +104,7 @@ def normalize_result(
                 normalized_item, item_size = normalize(child, item_depth + 1, enforce_budget=enforce_budget)
                 normalized_dict[key] = normalized_item
                 byte_size += json_string_size(key) + 1 + item_size + (1 if index else 0)
-                if byte_size > MAX_SCRIPT_RESULT_JSON_BYTES:
+                if byte_size > byte_limit:
                     reject_result()
             return normalized_dict, byte_size
         reject_result()

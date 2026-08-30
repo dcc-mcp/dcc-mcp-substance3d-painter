@@ -93,6 +93,10 @@ and executes suffix source exactly once after every source-entered `main()`
 attempt in a quarantined side-effect phase. Suffix rebinding or mutable aliases
 cannot change the captured entrypoint behavior or result, and suffix failures do
 not clobber the main outcome (including a stable rejection for invalid results).
+The suffix is side-effect-only: a `main()` that requires a helper, import, or
+mutable initialization introduced only by the suffix is rejected with the
+stable `script_suffix_dependency` error, so valid scripts must define those
+dependencies before `main()`.
 Cancellation remains bound to the exact host token and job captured before
 source entry.
 Results accept only strict portable JSON: string-keyed plain objects, plain

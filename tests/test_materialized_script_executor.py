@@ -920,6 +920,90 @@ def test_real_mcp_route_keeps_result_validator_outside_source_writable_state(mon
                 setattr(executor, name, original)
 
 
+def test_executor_rejects_over_budget_result_when_source_patches_runpy_loader(monkeypatch, tmp_path):
+    import runpy
+
+    original_run_path = runpy.run_path
+    content = (
+        "import runpy\n"
+        "runpy.run_path = lambda *args, **kwargs: {'normalize_result': lambda value, **kwargs: (value, 0)}\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
+    )
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        assert _rejection(descriptor.file_ref) == "script_result_invalid"
+    finally:
+        runpy.run_path = original_run_path
+
+
+def test_real_mcp_route_rejects_over_budget_result_when_source_patches_runpy_loader(monkeypatch, tmp_path):
+    import runpy
+
+    original_run_path = runpy.run_path
+    content = (
+        "import runpy\n"
+        "runpy.run_path = lambda *args, **kwargs: {'normalize_result': lambda value, **kwargs: (value, 0)}\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is False
+        assert result["error"] == "script_result_invalid"
+        assert result["prompt"] is None
+    finally:
+        runpy.run_path = original_run_path
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def main():\n"
+            "    return {'success': True, 'message': helper(), 'context': {}}\n"
+            "def helper():\n"
+            "    return 'helper declared after main'\n"
+        ),
+        (
+            "state = {}\n"
+            "def main():\n"
+            "    return {'success': True, 'message': state['message'], 'context': {}}\n"
+            "state['message'] = 'initialized after main'\n"
+        ),
+    ],
+    ids=["helper-declaration", "state-initialization"],
+)
+def test_executor_rejects_suffix_only_main_dependencies_with_stable_error(monkeypatch, tmp_path, content):
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+    assert _rejection(descriptor.file_ref) == "script_suffix_dependency"
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        (
+            "def main():\n"
+            "    return {'success': True, 'message': helper(), 'context': {}}\n"
+            "def helper():\n"
+            "    return 'helper declared after main'\n"
+        ),
+        (
+            "state = {}\n"
+            "def main():\n"
+            "    return {'success': True, 'message': state['message'], 'context': {}}\n"
+            "state['message'] = 'initialized after main'\n"
+        ),
+    ],
+    ids=["helper-declaration", "state-initialization"],
+)
+def test_real_mcp_route_rejects_suffix_only_main_dependencies_with_stable_error(monkeypatch, tmp_path, content):
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is False
+    assert result["error"] == "script_suffix_dependency"
+    assert result["prompt"] is None
+
+
 def test_executor_rejects_over_budget_result_when_source_rebinds_module_validator(monkeypatch, tmp_path):
     original_validator = executor._normalize_result
     missing = object()
