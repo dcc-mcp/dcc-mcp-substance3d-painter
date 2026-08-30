@@ -641,6 +641,115 @@ def test_real_mcp_route_keeps_frozen_main_result_immune_to_frame_locals_rebindin
     assert result["context"]["state"]["message"] == "validated value"
 
 
+@pytest.mark.parametrize(
+    ("result_expression", "mutation"),
+    [
+        (
+            "{'success': True, 'message': 'nodes', 'context': {'items': [0] * 10000}}",
+            "if name == 'result_node_limit': cell.cell_contents = 10**9\n            if name == 'node_count': cell.cell_contents = 0",
+        ),
+        (
+            "{'success': True, 'message': 'finite', 'context': {'value': float('nan')}}",
+            "if name == 'finite_number': cell.cell_contents = lambda value: True",
+        ),
+    ],
+    ids=["node-limit", "finite-number"],
+)
+def test_executor_rejects_main_frame_validator_mutation(monkeypatch, tmp_path, result_expression, mutation):
+    content = (
+        "import sys\n"
+        "def main():\n"
+        "    caller = sys._getframe(1)\n"
+        "    validator = caller.f_locals.get('normalize_result')\n"
+        "    if validator is not None:\n"
+        "        for name, cell in zip(validator.__code__.co_freevars, validator.__closure__):\n"
+        f"            {mutation}\n"
+        f"    return {result_expression}\n"
+    )
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+    assert _rejection(descriptor.file_ref) == "script_result_invalid"
+
+
+@pytest.mark.parametrize(
+    "result_expression",
+    [
+        "{'success': True, 'message': 'nodes', 'context': {'items': [0] * 10000}}",
+        "{'success': True, 'message': 'finite', 'context': {'value': float('nan')}}",
+    ],
+    ids=["node-limit", "finite-number"],
+)
+def test_real_mcp_route_rejects_main_frame_validator_mutation(monkeypatch, tmp_path, result_expression):
+    content = (
+        "import sys\n"
+        "def main():\n"
+        "    caller = sys._getframe(1)\n"
+        "    validator = caller.f_locals.get('normalize_result')\n"
+        "    if validator is not None:\n"
+        "        for name, cell in zip(validator.__code__.co_freevars, validator.__closure__):\n"
+        "            if name == 'result_node_limit': cell.cell_contents = 10**9\n"
+        "            if name == 'node_count': cell.cell_contents = 0\n"
+        "            if name == 'finite_number': cell.cell_contents = lambda value: True\n"
+        f"    return {result_expression}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is False
+    assert result["error"] == "script_result_invalid"
+    assert result["prompt"] is None
+
+
+@pytest.mark.parametrize(
+    "main_body",
+    [
+        "raise RuntimeError('main failed')",
+        "return {'success': 'invalid', 'message': 'bad', 'context': {}}",
+    ],
+    ids=["exception", "invalid-result"],
+)
+def test_executor_runs_suffix_once_after_main_failure(monkeypatch, tmp_path, main_body):
+    marker = "_dcc_mcp_suffix_after_main_failure_count"
+    content = (
+        f"import builtins\ndef main():\n    {main_body}\nbuiltins.{marker} = getattr(builtins, '{marker}', 0) + 1\n"
+    )
+    builtins_module = __import__("builtins")
+    if hasattr(builtins_module, marker):
+        delattr(builtins_module, marker)
+    try:
+        assert _rejection(_materialized(monkeypatch, tmp_path, content)[0].file_ref) in {
+            "script_execution_failed",
+            "script_result_invalid",
+        }
+        assert getattr(builtins_module, marker) == 1
+    finally:
+        if hasattr(builtins_module, marker):
+            delattr(builtins_module, marker)
+
+
+@pytest.mark.parametrize(
+    "main_body",
+    [
+        "raise RuntimeError('main failed')",
+        "return {'success': 'invalid', 'message': 'bad', 'context': {}}",
+    ],
+    ids=["exception", "invalid-result"],
+)
+def test_real_mcp_route_runs_suffix_once_after_main_failure(monkeypatch, tmp_path, main_body):
+    marker = "_dcc_mcp_route_suffix_after_main_failure_count"
+    content = (
+        f"import builtins\ndef main():\n    {main_body}\nbuiltins.{marker} = getattr(builtins, '{marker}', 0) + 1\n"
+    )
+    builtins_module = __import__("builtins")
+    if hasattr(builtins_module, marker):
+        delattr(builtins_module, marker)
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is False
+        assert result["error"] in {"script_execution_failed", "script_result_invalid"}
+        assert getattr(builtins_module, marker) == 1
+    finally:
+        if hasattr(builtins_module, marker):
+            delattr(builtins_module, marker)
+
+
 def test_real_mcp_route_isolates_captured_main_from_suffix_mutable_dict_alias(monkeypatch, tmp_path):
     content = (
         "state = {'message': 'validated value'}\n"
