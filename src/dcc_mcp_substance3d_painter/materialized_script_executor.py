@@ -79,6 +79,11 @@ _SYSTEM_EXIT_TYPES = (SystemExit, KeyboardInterrupt, GeneratorExit)
 _FUNCTION_TYPE = FunctionType
 _DICT_TYPE = dict
 _BOOL_TYPE = bool
+# Capture the host ContextVar objects themselves.  Materialized source may
+# rebind the public cancellation helpers (or their module globals), but these
+# C-level ContextVar instances remain stable and are used to restore state.
+_HOST_CANCEL_CONTEXT = current_cancel_token.__globals__["_current_token"]
+_HOST_JOB_CONTEXT = current_job
 
 
 def _reject(code: str, *, source_entered: bool = False) -> None:
@@ -431,42 +436,39 @@ def _suffix_dependency_names(
     return missing_declarations | suffix_writes
 
 
-def _bind_host_result_normalizer() -> FunctionType:
-    """Clone the host validator before materialized source is entered.
+def _capture_host_result_normalizer() -> tuple[Any, ...]:
+    """Capture an immutable validator snapshot before materialized source.
 
-    A direct module alias is still a mutable Python function object: materialized
-    code could otherwise replace its ``__code__`` or global dictionary before a
-    later validation pass.  The clone owns a minimal immutable-by-convention
-    globals mapping and captures every builtin used by the validator, so source
-    imports, ``runpy`` hooks, and adapter-module rebinding cannot alter it.
+    Keeping only code objects, immutable tuples, and builtin type references in
+    the source frame prevents frame-walking materialized code from obtaining a
+    mutable validator callable.  The callable is reconstructed inline only
+    after ``main()``/suffix execution has returned.
     """
 
     validator = _HOST_RESULT_NORMALIZER
-    validator_globals = {
-        "__builtins__": {},
-        "type": type,
-        "dict": dict,
-        "list": list,
-        "str": str,
-        "bool": bool,
-        "int": int,
-        "float": float,
-        "len": len,
-        "ord": ord,
-        "repr": repr,
-        "enumerate": enumerate,
-        "UnicodeEncodeError": UnicodeEncodeError,
-        "ValueError": ValueError,
-    }
-    clone = _FUNCTION_TYPE(
+    return (
         validator.__code__,
-        validator_globals,
         validator.__name__,
         validator.__defaults__,
-        validator.__closure__,
+        tuple(sorted((validator.__kwdefaults__ or {}).items())),
+        _FUNCTION_TYPE,
+        _DICT_TYPE,
+        (
+            ("type", type),
+            ("dict", dict),
+            ("list", list),
+            ("str", str),
+            ("bool", bool),
+            ("int", int),
+            ("float", float),
+            ("len", len),
+            ("ord", ord),
+            ("repr", repr),
+            ("enumerate", enumerate),
+            ("UnicodeEncodeError", UnicodeEncodeError),
+            ("ValueError", ValueError),
+        ),
     )
-    clone.__kwdefaults__ = dict(validator.__kwdefaults__ or {})
-    return clone
 
 
 def _normalize_result(
@@ -609,15 +611,31 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         "__package__": None,
     }
 
-    # Capture host cancellation state before entering materialized source.  No
-    # result validator or its mutable state is present in this executor frame.
-    host_cancel_token = current_cancel_token()
-    host_job = current_job.get()
+    # Capture host cancellation state before entering materialized source.  Use
+    # the ContextVar objects directly rather than the imported Python setter
+    # functions: source may rebind those module attributes while it runs.
+    # Keeping the ContextVar tuple immutable also prevents frame-local item
+    # replacement from changing what the final restoration writes.
+    host_contexts = (_HOST_CANCEL_CONTEXT, _HOST_JOB_CONTEXT)
+    host_cancel_token = host_contexts[0].get()
+    host_job = host_contexts[1].get()
+    # Source can import this module and rebind the public names.  Save the
+    # original bindings and restore them after both source phases so one
+    # materialized script cannot poison later requests.
+    host_module_globals = globals()
+    host_cancellation_api = (
+        set_cancel_token,
+        set_current_job,
+        current_cancel_token,
+        current_job,
+    )
 
     # Bind the host-owned validator before entering materialized code.  The
     # source may patch dynamic loaders or rebind module globals, but it cannot
     # replace this already-captured callable used after the source frame returns.
-    host_result_normalizer = _bind_host_result_normalizer()
+    # Keep only immutable validator code/builtin references visible while source
+    # executes; reconstruct the mutable callable around each host-only pass.
+    host_validator_snapshot = _capture_host_result_normalizer()
 
     dispatch_path, dispatch_body, dispatch_sha256, dispatch_stat = _validate_contract(file_ref)
     if (
@@ -653,8 +671,8 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             result = _invoke_entrypoint(entrypoint)
         except _CANCELLED_TYPE as exc:
             cancellation_is_host_owned = (
-                current_cancel_token() is host_cancel_token
-                and current_job.get() is host_job
+                host_contexts[0].get() is host_cancel_token
+                and host_contexts[1].get() is host_job
                 and (
                     (host_cancel_token is not None and bool(host_cancel_token.cancelled))
                     or (host_job is not None and bool(host_job.cancelled))
@@ -669,20 +687,47 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         except BaseException:
             result_rejection = _REJECTED_TYPE("script_execution_failed", source_entered=True)
         if result_rejection is None and host_cancellation is None:
+            host_result_normalizer = None
+            validator_globals = None
+            validator_code = validator_name = validator_defaults = validator_kwdefaults = None
+            validator_function_type = validator_dict_type = validator_bindings = None
             try:
                 if type(result) is not _DICT_TYPE or not isinstance(result.get("success"), _BOOL_TYPE):
                     raise _REJECTED_TYPE("script_result_invalid", source_entered=True)
 
+                (
+                    validator_code,
+                    validator_name,
+                    validator_defaults,
+                    validator_kwdefaults,
+                    validator_function_type,
+                    validator_dict_type,
+                    validator_bindings,
+                ) = host_validator_snapshot
+                validator_globals = validator_dict_type(validator_bindings)
+                host_result_normalizer = validator_function_type(
+                    validator_code,
+                    validator_globals,
+                    validator_name,
+                    validator_defaults,
+                    None,
+                )
+                host_result_normalizer.__kwdefaults__ = validator_dict_type(validator_kwdefaults)
                 normalized, _ = host_result_normalizer(result)
                 normalized_snapshot = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
             except _REJECTED_TYPE as exc:
                 result_rejection = exc
             except BaseException:
                 result_rejection = _REJECTED_TYPE("script_result_invalid", source_entered=True)
+            finally:
+                del host_result_normalizer
+                del validator_globals
+                del validator_code, validator_name, validator_defaults, validator_kwdefaults
+                del validator_function_type, validator_dict_type, validator_bindings
     except _CANCELLED_TYPE:
         cancellation_is_host_owned = (
-            current_cancel_token() is host_cancel_token
-            and current_job.get() is host_job
+            host_contexts[0].get() is host_cancel_token
+            and host_contexts[1].get() is host_job
             and (
                 (host_cancel_token is not None and bool(host_cancel_token.cancelled))
                 or (host_job is not None and bool(host_job.cancelled))
@@ -698,8 +743,15 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     except BaseException:
         raise _REJECTED_TYPE("script_execution_failed", source_entered=True) from None
     finally:
-        set_cancel_token(host_cancel_token)
-        set_current_job(host_job)
+        # Restore through the captured host-owned ContextVars.  This remains
+        # correct even if source replaced ``set_cancel_token`` or installed a
+        # forged token in the current context.
+        host_contexts[0].set(host_cancel_token)
+        host_contexts[1].set(host_job)
+        host_module_globals["set_cancel_token"] = host_cancellation_api[0]
+        host_module_globals["set_current_job"] = host_cancellation_api[1]
+        host_module_globals["current_cancel_token"] = host_cancellation_api[2]
+        host_module_globals["current_job"] = host_cancellation_api[3]
 
     # Issue #38 guarantees one suffix pass after a source-entered main attempt,
     # including invalid results and exceptions.  It is side-effect-only: no
@@ -709,6 +761,15 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             _execute_suffix(compiled_suffix, namespace)
         except BaseException:
             logger.warning("Materialized suffix failed after source entry; preserving main outcome.")
+        finally:
+            # Suffix code is source too and may perform the same module/context
+            # rebinding attack.  Re-apply the host state after this final pass.
+            host_contexts[0].set(host_cancel_token)
+            host_contexts[1].set(host_job)
+            host_module_globals["set_cancel_token"] = host_cancellation_api[0]
+            host_module_globals["set_current_job"] = host_cancellation_api[1]
+            host_module_globals["current_cancel_token"] = host_cancellation_api[2]
+            host_module_globals["current_job"] = host_cancellation_api[3]
 
     if (
         result_rejection is not None
@@ -742,12 +803,39 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     context.update({"sha256": sha256, "bytes": len(body), "execution_file": execution_file})
     if normalized["success"]:
         normalized["postcondition"] = {"verified": True, **execution_file}
+    host_result_normalizer = None
+    validator_globals = None
+    validator_code = validator_name = validator_defaults = validator_kwdefaults = None
+    validator_function_type = validator_dict_type = validator_bindings = None
     try:
+        (
+            validator_code,
+            validator_name,
+            validator_defaults,
+            validator_kwdefaults,
+            validator_function_type,
+            validator_dict_type,
+            validator_bindings,
+        ) = host_validator_snapshot
+        validator_globals = validator_dict_type(validator_bindings)
+        host_result_normalizer = validator_function_type(
+            validator_code,
+            validator_globals,
+            validator_name,
+            validator_defaults,
+            None,
+        )
+        host_result_normalizer.__kwdefaults__ = validator_dict_type(validator_kwdefaults)
         normalized, _ = host_result_normalizer(normalized, enforce_shape_budget=False)
     except _REJECTED_TYPE:
         raise
     except BaseException:
         raise _REJECTED_TYPE("script_result_invalid", source_entered=True) from None
+    finally:
+        del host_result_normalizer
+        del validator_globals
+        del validator_code, validator_name, validator_defaults, validator_kwdefaults
+        del validator_function_type, validator_dict_type, validator_bindings
     return normalized
 
 

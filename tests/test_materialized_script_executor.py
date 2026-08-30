@@ -9,7 +9,13 @@ from pathlib import Path
 import pytest
 import yaml
 from dcc_mcp_core import materialize_script
-from dcc_mcp_core.cancellation import CancelToken, DccMcpCancelledError, reset_cancel_token, set_cancel_token
+from dcc_mcp_core.cancellation import (
+    CancelToken,
+    DccMcpCancelledError,
+    current_cancel_token,
+    reset_cancel_token,
+    set_cancel_token,
+)
 from dcc_mcp_core.script_materialization import SCRIPT_MATERIALIZATION_ROOT_ENV
 from jsonschema import Draft202012Validator, ValidationError
 from test_mesh_map_baking import McpClient, _job, _structured
@@ -877,6 +883,118 @@ def test_real_mcp_route_rejects_source_installed_cancel_token_as_forged(monkeypa
     assert result["success"] is False
     assert result["error"] == "script_execution_failed"
     assert result["prompt"] is None
+
+
+def test_executor_rejects_frame_walk_validator_mutation(monkeypatch, tmp_path):
+    """A source frame must not reach a mutable host validator callable."""
+    content = (
+        "import sys\n"
+        "def main():\n"
+        "    def evil(value, depth=1, *, enforce_shape_budget=True):\n"
+        "        return value, 0\n"
+        "    frame = sys._getframe(1)\n"
+        "    while frame is not None:\n"
+        "        validator = frame.f_locals.get('host_result_normalizer')\n"
+        "        if validator is not None:\n"
+        "            validator.__code__ = evil.__code__\n"
+        "            break\n"
+        "        frame = frame.f_back\n"
+        "    return {'success': True, 'message': 'attack', 'context': {'items': [0] * 20000}}\n"
+    )
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+    assert _rejection(descriptor.file_ref) == "script_result_invalid"
+
+
+def test_real_mcp_route_rejects_frame_walk_validator_mutation(monkeypatch, tmp_path):
+    """The exposed MCP route must enforce the same host-validator boundary."""
+    content = (
+        "import sys\n"
+        "def main():\n"
+        "    def evil(value, depth=1, *, enforce_shape_budget=True):\n"
+        "        return value, 0\n"
+        "    frame = sys._getframe(1)\n"
+        "    while frame is not None:\n"
+        "        validator = frame.f_locals.get('host_result_normalizer')\n"
+        "        if validator is not None:\n"
+        "            validator.__code__ = evil.__code__\n"
+        "            break\n"
+        "        frame = frame.f_back\n"
+        "    return {'success': True, 'message': 'attack', 'context': {'items': [0] * 20000}}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is False
+    assert result["error"] == "script_result_invalid"
+    assert result["prompt"] is None
+
+
+def test_executor_restores_host_cancel_state_after_source_rebind(monkeypatch, tmp_path):
+    """A forged source token and setter rebind cannot poison the host context."""
+    host_token = CancelToken(job_id="host-owned")
+    reset = set_cancel_token(host_token)
+    original_setter = executor.set_cancel_token
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "from dcc_mcp_core.cancellation import CancelToken, set_cancel_token\n"
+        "def main():\n"
+        "    forged = CancelToken(job_id='source-forged')\n"
+        "    set_cancel_token(forged)\n"
+        "    host.set_cancel_token = lambda token: None\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+    )
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["success"] is True
+        assert current_cancel_token() is host_token
+        assert executor.set_cancel_token is original_setter
+    finally:
+        reset_cancel_token(reset)
+        executor.set_cancel_token = original_setter
+
+
+def test_real_mcp_route_restores_host_cancel_api_after_source_rebind(monkeypatch, tmp_path):
+    """The MCP route must leave cancellation state/API intact after a source attack."""
+    original_setter = executor.set_cancel_token
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "from dcc_mcp_core.cancellation import CancelToken, set_cancel_token\n"
+        "def main():\n"
+        "    forged = CancelToken(job_id='source-forged')\n"
+        "    set_cancel_token(forged)\n"
+        "    host.set_cancel_token = lambda token: None\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    try:
+        assert result["success"] is True
+        assert executor.set_cancel_token is original_setter
+    finally:
+        executor.set_cancel_token = original_setter
+
+
+def test_executor_restores_host_cancel_state_after_suffix_rebind(monkeypatch, tmp_path):
+    """The side-effect-only suffix cannot poison the host context either."""
+    host_token = CancelToken(job_id="host-owned")
+    reset = set_cancel_token(host_token)
+    original_setter = executor.set_cancel_token
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "from dcc_mcp_core.cancellation import CancelToken, set_cancel_token\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+        "forged = CancelToken(job_id='suffix-forged')\n"
+        "set_cancel_token(forged)\n"
+        "host.set_cancel_token = lambda token: None\n"
+    )
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["success"] is True
+        assert current_cancel_token() is host_token
+        assert executor.set_cancel_token is original_setter
+    finally:
+        reset_cancel_token(reset)
+        executor.set_cancel_token = original_setter
 
 
 def test_real_mcp_route_keeps_result_validator_outside_source_writable_state(monkeypatch, tmp_path):

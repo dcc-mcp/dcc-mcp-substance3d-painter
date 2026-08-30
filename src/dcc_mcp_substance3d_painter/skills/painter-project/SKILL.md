@@ -45,7 +45,8 @@ fails closed with `script_suffix_dependency`. Define all `main()` dependencies
 before the entrypoint.
 Cancellation is propagated only from the exact host token and job captured
 before source entry; source-installed ambient tokens are rejected as execution
-failures. Results
+failures. The captured host ContextVar state and cancellation API bindings are
+restored after both source phases. Results
 must be strict portable JSON with plain string-keyed objects and plain lists;
 tuples, custom mappings, non-string keys, nested NaN, and Infinity are rejected.
 Host-owned validation enforces maximum container depth 64, 10,000 value nodes,
