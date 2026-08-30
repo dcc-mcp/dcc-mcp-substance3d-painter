@@ -39,12 +39,13 @@ The full security and expiry check is repeated immediately before main-thread
 dispatch. Execution remains bound to the validated function definition, its
 prefix helpers/imports, and its prefix globals. The adapter invokes that
 entrypoint through a host callable captured before source entry. Direct `json`
-and executor-module imports resolve to request-private aliases, so even a
-retained executor alias cannot regain canonical host JSON after return. The
-adapter snapshots the strict JSON result when valid and executes suffix source
-exactly once after every source-entered `main()` attempt in a quarantined
-side-effect phase. Rebinding, object/module attributes, and mutable aliases in
-suffix source cannot change the captured behavior or result, and
+and executor-module imports resolve to request-private JSON state. The executor
+import is a minimal facade with no executor callables or canonical module state,
+so a retained facade cannot regain host globals after return. The adapter
+snapshots the strict JSON result when valid and executes suffix source exactly
+once after every source-entered `main()` attempt in a quarantined side-effect
+phase. Rebinding, object/module attributes, and mutable aliases in suffix source
+cannot change the captured behavior or result, and
 suffix failures do not clobber the main outcome (including a stable rejection
 for invalid results). The suffix is side-effect-only; if `main()` needs a helper,
 import, or mutable initialization introduced only by that suffix, execution
