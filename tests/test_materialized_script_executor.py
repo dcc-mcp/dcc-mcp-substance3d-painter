@@ -1674,7 +1674,8 @@ def test_real_mcp_route_isolates_json_callable_globals_from_materialized_source(
         result = _execute_through_mcp(monkeypatch, tmp_path, content)
         assert result["success"] is True
         assert result["message"] == "validated"
-        assert host_globals.get("_default_decoder") is original
+        assert json.loads('{"verified": true}') == {"verified": True}
+        assert host_globals.get("_default_decoder") is not original
     finally:
         if original is None:
             host_globals.pop("_default_decoder", None)
@@ -1716,3 +1717,46 @@ def test_real_mcp_route_preserves_snapshot_after_frame_walk_mutates_snapshot_fre
     assert result["success"] is True
     assert result["message"] == "validated"
     assert result["context"]["items"] == []
+
+
+def test_executor_restores_fresh_json_decoder_state_between_requests(monkeypatch, tmp_path):
+    """Mutable decoder internals reached through the executor alias must not survive."""
+    original_decoder = executor.json._default_decoder
+    first = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def main():\n"
+        "    host.json._default_decoder.scan_once = lambda value, index: ({}, len(value))\n"
+        "    return {'success': True, 'message': 'first', 'context': {}}\n"
+    )
+    second = "def main():\n    return {'success': True, 'message': 'second', 'context': {}}\n"
+    try:
+        first_descriptor, _ = _materialized(monkeypatch, tmp_path / "first", first)
+        assert execute_materialized_file_ref(first_descriptor.file_ref)["message"] == "first"
+
+        second_descriptor, _ = _materialized(monkeypatch, tmp_path / "second", second)
+        assert execute_materialized_file_ref(second_descriptor.file_ref)["message"] == "second"
+        assert executor.json.loads('{"verified": true}') == {"verified": True}
+        assert executor.json._default_decoder is not original_decoder
+    finally:
+        executor.json._default_decoder = original_decoder
+
+
+def test_executor_preserves_execution_failed_for_unrelated_main_exception(monkeypatch, tmp_path):
+    """A later suffix assignment must not relabel an unrelated main failure."""
+    content = (
+        "message = 'ready'\n"
+        "def main():\n"
+        "    assert message == 'ready'\n"
+        "    raise RuntimeError('unrelated')\n"
+        "message = 'updated after main'\n"
+    )
+    descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+    assert _rejection(descriptor.file_ref) == "script_execution_failed"
+
+
+@pytest.mark.parametrize("value", [1.7976931348623157e308, -1.7976931348623157e308])
+def test_real_mcp_route_accepts_finite_float_extremes(monkeypatch, tmp_path, value):
+    content = f"def main():\n    return {{'success': True, 'message': 'finite', 'context': {{'value': {value!r}}}}}\n"
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["context"]["value"] == value

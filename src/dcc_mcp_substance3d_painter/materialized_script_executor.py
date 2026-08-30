@@ -652,8 +652,6 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_json_loads = host_json_module.loads
     host_json_encoder = host_json_module.JSONEncoder
     host_json_decoder = host_json_module.JSONDecoder
-    host_json_default_encoder = host_json_module._default_encoder
-    host_json_default_decoder = host_json_module._default_decoder
     host_json_encoder_module = host_json_module.encoder
     host_json_decoder_module = host_json_module.decoder
     host_json_encoder_module_encoder = host_json_encoder_module.JSONEncoder
@@ -664,8 +662,12 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         host_json_module.loads = host_json_loads
         host_json_module.JSONEncoder = host_json_encoder
         host_json_module.JSONDecoder = host_json_decoder
-        host_json_module._default_encoder = host_json_default_encoder
-        host_json_module._default_decoder = host_json_default_decoder
+        # The default encoder/decoder carry mutable per-instance caches.  Do
+        # not restore source-reachable objects by reference: a materialized
+        # request could already have changed their internals through an
+        # imported executor alias.  Rebuild pristine stdlib defaults instead.
+        host_json_module._default_encoder = host_json_encoder()
+        host_json_module._default_decoder = host_json_decoder()
         host_json_encoder_module.JSONEncoder = host_json_encoder_module_encoder
         host_json_decoder_module.JSONDecoder = host_json_decoder_module_decoder
 
@@ -675,6 +677,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_rejected_type = _REJECTED_TYPE
     host_cancelled_type = _CANCELLED_TYPE
     host_system_exit_types = _SYSTEM_EXIT_TYPES
+    host_suffix_dependency_errors = (NameError, KeyError, AttributeError, IndexError)
     host_cancellation_api = (set_cancel_token, set_current_job, current_cancel_token, current_job)
     # Bind the host-owned validator before entering materialized code.  The
     # source may patch dynamic loaders or rebind module globals, but it cannot
@@ -721,10 +724,15 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     result_rejection: BaseException | None = None
     host_cancellation: BaseException | None = None
     source_entered = False
+    suffix_dependency_candidate = False
     normalized_snapshot: bytes | None = None
     prefix_names: frozenset[str] = frozenset()
     entrypoint: FunctionType | None = None
     try:
+        # Requests import a private json package, and the documented executor
+        # alias must observe that same request-owned package.  Otherwise
+        # ``executor.json`` exposes mutable process-global decoder state.
+        host_module_globals["json"] = isolated_json
         exec(compiled_prefix, namespace, namespace)
         prefix_names = frozenset(namespace)
         exposed_entrypoint = namespace.get("main")
@@ -757,6 +765,9 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
                 result_rejection = host_rejected_type("script_execution_failed", source_entered=True)
         except host_system_exit_types:
             result_rejection = host_rejected_type("script_execution_failed", source_entered=True)
+        except host_suffix_dependency_errors:
+            result_rejection = host_rejected_type("script_execution_failed", source_entered=True)
+            suffix_dependency_candidate = True
         except BaseException:
             result_rejection = host_rejected_type("script_execution_failed", source_entered=True)
         # ``main`` is no longer running. Restore host-owned dictionaries before
@@ -888,6 +899,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     # result is read from its namespace and failures are recorded only in logs.
     if source_entered:
         try:
+            host_module_globals["json"] = isolated_json
             _execute_suffix(compiled_suffix, namespace)
         except BaseException:
             logger.warning("Materialized suffix failed after source entry; preserving main outcome.")
@@ -930,6 +942,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         result_rejection is not None
         and getattr(result_rejection, "code", None) == "script_execution_failed"
         and entrypoint is not None
+        and suffix_dependency_candidate
     ):
         suffix_dependencies = _suffix_dependency_names(entrypoint, prefix_names, suffix)
         if suffix_dependencies:
