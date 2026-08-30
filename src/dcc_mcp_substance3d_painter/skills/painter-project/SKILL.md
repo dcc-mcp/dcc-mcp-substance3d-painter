@@ -28,16 +28,23 @@ a core job envelope. Use `--wait` when calling through `dcc-mcp-cli`, or poll
 `execute_materialized_script` is the bounded companion to Core's
 `materialize_script`. It accepts only the unchanged Python `file_ref` returned
 by Core: no inline source, direct path, arguments, execution mode, or UI route.
+A FileRef proves source identity and freshness; it is not a trust decision or a
+same-process Python security sandbox. Materialize only source trusted to run
+with the current Painter process privileges. Reflective code or background work
+intended to outlive the fixed request lifecycle is outside this tool contract.
 Before Painter runs the fixed `main()` entry point, the adapter verifies the
 materialization sidecar, scoped path, regular-file identity, single-link
 ownership, size, UTF-8 encoding, digest, expiry, and a stable file snapshot.
 The full security and expiry check is repeated immediately before main-thread
 dispatch. Execution remains bound to the validated function definition, its
 prefix helpers/imports, and its prefix globals. The adapter invokes that
-host-owned entrypoint, snapshots its strict JSON result when valid, and executes
-suffix source exactly once after every source-entered `main()` attempt in a
-quarantined side-effect phase. Rebinding, object/module attributes, and mutable
-aliases in suffix source cannot change the captured behavior or result, and
+entrypoint through a host callable captured before source entry. Direct `json`
+and executor-module imports resolve to request-private aliases, so even a
+retained executor alias cannot regain canonical host JSON after return. The
+adapter snapshots the strict JSON result when valid and executes suffix source
+exactly once after every source-entered `main()` attempt in a quarantined
+side-effect phase. Rebinding, object/module attributes, and mutable aliases in
+suffix source cannot change the captured behavior or result, and
 suffix failures do not clobber the main outcome (including a stable rejection
 for invalid results). The suffix is side-effect-only; if `main()` needs a helper,
 import, or mutable initialization introduced only by that suffix, execution
@@ -46,8 +53,9 @@ before the entrypoint.
 Cancellation is propagated only from the exact host token and job captured
 before source entry; source-installed ambient tokens are rejected as execution
 failures. The captured host ContextVar state, cancellation module bindings,
-validator alias, and JSON serializer are restored after both source phases, so
-source changes cannot poison a later request. Results
+validator alias, and canonical JSON serializer are restored after both source
+phases. These fixed-contract guarantees do not isolate arbitrary untrusted
+Python running in Painter's process. Results
 must be strict portable JSON with plain string-keyed objects and plain lists;
 tuples, custom mappings, non-string keys, nested NaN, and Infinity are rejected.
 Host-owned validation enforces maximum container depth 64, 10,000 value nodes,

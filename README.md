@@ -84,24 +84,32 @@ Core `materialize_script`:
 
 The tools use Painter resource and preset URLs supplied by Painter itself. They
 do not expose raw JavaScript, inline source, caller-selected paths, execution
-modes, or UI automation. The materialized-script executor validates Core's
+modes, or UI automation. A materialized FileRef is an integrity envelope, not a
+trust decision or a Python security sandbox: only materialize source that is
+trusted to run with the current Painter process privileges. Reflective code or
+background work intended to outlive the fixed request lifecycle is outside the
+supported contract. The materialized-script executor validates Core's
 scoped sidecar, file identity, digest, size, encoding, and expiry before the
 fixed `main()` entry point reaches Painter's main thread. It repeats the full
 FileRef check immediately before dispatch, clones and invokes the validated
-function with its prefix globals, snapshots its strict JSON result when valid,
-and executes suffix source exactly once after every source-entered `main()`
-attempt in a quarantined side-effect phase. Suffix rebinding or mutable aliases
-cannot change the captured entrypoint behavior or result, and suffix failures do
-not clobber the main outcome (including a stable rejection for invalid results).
+function with its prefix globals through a host callable captured before source
+entry, snapshots its strict JSON result when valid, and executes suffix source
+exactly once after every source-entered `main()` attempt in a quarantined
+side-effect phase. Direct `json` and executor-module imports resolve to
+request-private aliases; a retained executor alias cannot regain the canonical
+host JSON package after return. Prefix or suffix rebinding cannot change the
+captured entrypoint behavior or result, and suffix failures do not clobber the
+main outcome (including a stable rejection for invalid results).
 The suffix is side-effect-only: a `main()` that requires a helper, import, or
 mutable initialization introduced only by the suffix is rejected with the
 stable `script_suffix_dependency` error, so valid scripts must define those
 dependencies before `main()`.
 Cancellation remains bound to the exact host token and job captured before
 source entry; the executor restores the captured host ContextVar state,
-cancellation module bindings, validator alias, and JSON serializer after both
-source phases. Changes to those host-owned bindings cannot leak into a later
-request.
+cancellation module bindings, validator alias, and canonical JSON serializer
+after both source phases. These guarantees cover the fixed executor contract;
+they must not be interpreted as isolation from arbitrary untrusted Python in
+the same process.
 Results accept only strict portable JSON: string-keyed plain objects, plain
 arrays, JSON scalars, and finite numbers, with maximum depth 64, 10,000 nodes,
 and 256 KiB of compact UTF-8 JSON. The byte limit covers the complete public
