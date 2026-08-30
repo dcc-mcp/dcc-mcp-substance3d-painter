@@ -37,7 +37,7 @@ def normalize_result(
     render_float = repr
 
     def finite_number(item: Any) -> bool:
-        return item == item and -1.7976931348623157e308 < item < 1.7976931348623157e308
+        return item == item and -1.7976931348623157e308 <= item <= 1.7976931348623157e308
 
     node_count = 0
 
