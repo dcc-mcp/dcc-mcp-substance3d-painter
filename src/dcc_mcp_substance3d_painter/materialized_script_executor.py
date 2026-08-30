@@ -533,7 +533,28 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
             try:
                 if type(result) is not _DICT_TYPE or not isinstance(result.get("success"), _BOOL_TYPE):
                     raise _REJECTED_TYPE("script_result_invalid", source_entered=True)
-                normalized, _ = _normalize_result(result)
+
+                # Load the validator into a fresh, unregistered module only
+                # after source execution.  No validator object or module
+                # reference is present while materialized code runs.
+                def load_result_validator() -> Any:
+                    import runpy
+                    from pathlib import Path
+
+                    validator_path = Path((lambda: None).__code__.co_filename).with_name("_result_validator.py")
+                    loaded = runpy.run_path(str(validator_path), run_name="__dcc_mcp_result_validator__")
+                    validator = loaded.get("normalize_result")
+                    if not callable(validator):
+                        raise TypeError
+                    return validator
+
+                try:
+                    isolated_validator = load_result_validator()
+                    normalized, _ = isolated_validator(result)
+                finally:
+                    if "isolated_validator" in locals():
+                        del isolated_validator
+                    del load_result_validator
                 normalized_snapshot = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
             except _REJECTED_TYPE as exc:
                 result_rejection = exc
@@ -590,7 +611,26 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     if normalized["success"]:
         normalized["postcondition"] = {"verified": True, **execution_file}
     try:
-        normalized, _ = _normalize_result(normalized, enforce_shape_budget=False)
+        # Recreate the unregistered validator after suffix side effects so the
+        # suffix cannot retain or mutate the first validation callable.
+        def load_postprocess_validator() -> Any:
+            import runpy
+            from pathlib import Path
+
+            validator_path = Path((lambda: None).__code__.co_filename).with_name("_result_validator.py")
+            loaded = runpy.run_path(str(validator_path), run_name="__dcc_mcp_result_validator__")
+            validator = loaded.get("normalize_result")
+            if not callable(validator):
+                raise TypeError
+            return validator
+
+        try:
+            isolated_postprocess_validator = load_postprocess_validator()
+            normalized, _ = isolated_postprocess_validator(normalized, enforce_shape_budget=False)
+        finally:
+            if "isolated_postprocess_validator" in locals():
+                del isolated_postprocess_validator
+            del load_postprocess_validator
     except _REJECTED_TYPE:
         raise
     except BaseException:
