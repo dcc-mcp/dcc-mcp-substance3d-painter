@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.5.0...v0.5.1) (2026-08-30)
+
+
+### Bug Fixes
+
+* bind materialized result validator ([56570e1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/56570e1af4588c1853ebb527e7e44a29e5fe368d))
+* freeze materialized host state across requests ([4ec1109](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/4ec1109c75c9f6fe44a89e33e7487e78398f3263))
+* harden materialized source boundary ([a41e635](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/a41e6357ffc1a892242943c72e8895b09c7f63fc))
+* harden materialized validator isolation ([3dc6f81](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/3dc6f819101b93393cd3d309baf4c926bf8831d9))
+* isolate materialized host cancellation state ([d7b6c03](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/d7b6c0344259afa879adefd04d2047d0be1374db))
+* isolate materialized result serialization ([9a2eb5e](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/9a2eb5ef483ea8629a977e64e66c1bb570e989c8))
+* isolate materialized runtime state ([cebc952](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/cebc952abc31792b3665b9a041c3e435328e10ff))
+* isolate materialized suffix aliases ([0df552a](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/0df552a9a4645d536986b01055a5afc9e11dff5e))
+* isolate materialized suffix side effects ([eb56f20](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/eb56f20b280730846ac2c1f00d04538a092fda0c))
+* isolate materialized validator and run suffix ([24636fa](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/24636fa4cb6e8d5704e320de8b95cd6c2b4909ca))
+* minimize materialized request facade ([781c168](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/781c1688f591827caf63376163bef1b2230e37d4))
+
 ## [0.5.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.4.1...v0.5.0) (2026-08-27)
 
 
