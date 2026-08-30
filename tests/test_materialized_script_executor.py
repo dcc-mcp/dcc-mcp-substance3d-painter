@@ -72,6 +72,7 @@ def _execute_through_mcp(monkeypatch, tmp_path, content):
     monkeypatch.setenv("DCC_MCP_DISABLE_FILE_LOGGING", "1")
     monkeypatch.setenv("DCC_MCP_DISABLE_JOB_PERSISTENCE", "1")
     monkeypatch.setenv("DCC_MCP_DISABLE_TELEMETRY", "1")
+    monkeypatch.setenv("DCC_MCP_GATEWAY_PORT", "0")
 
     dispatcher = PainterQtDispatcher()
     server = SubstancePainterMcpServer(dispatcher, port=0)
@@ -1033,7 +1034,8 @@ def test_real_mcp_route_keeps_result_validator_outside_source_writable_state(mon
     finally:
         for name, original in originals.items():
             if original is sentinel:
-                delattr(executor, name)
+                if hasattr(executor, name):
+                    delattr(executor, name)
             else:
                 setattr(executor, name, original)
 
@@ -1072,6 +1074,131 @@ def test_real_mcp_route_rejects_over_budget_result_when_source_patches_runpy_loa
         assert result["prompt"] is None
     finally:
         runpy.run_path = original_run_path
+
+
+def test_executor_rejects_cross_request_host_validator_alias_poisoning(monkeypatch, tmp_path):
+    """A prior materialized request cannot replace the host validator for the next request."""
+    missing = object()
+    original_alias = getattr(executor, "_HOST_RESULT_NORMALIZER", missing)
+    poison = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def main():\n"
+        "    host._HOST_RESULT_NORMALIZER = lambda value, **kwargs: (value, 0)\n"
+        "    return {'success': True, 'message': 'poisoned', 'context': {}}\n"
+    )
+    over_budget = (
+        "def main():\n    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
+    )
+    try:
+        first, _ = _materialized(monkeypatch, tmp_path / "first", poison)
+        assert execute_materialized_file_ref(first.file_ref)["message"] == "poisoned"
+        second, _ = _materialized(monkeypatch, tmp_path / "second", over_budget)
+        assert _rejection(second.file_ref) == "script_result_invalid"
+    finally:
+        if original_alias is missing:
+            executor.__dict__.pop("_HOST_RESULT_NORMALIZER", None)
+        else:
+            executor._HOST_RESULT_NORMALIZER = original_alias
+
+
+def test_executor_ignores_source_json_serializer_mutation(monkeypatch, tmp_path):
+    """A source-owned json.dumps cannot forge a post-validation snapshot."""
+    original_json = executor.json
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def forged_dump(*args, **kwargs):\n"
+        '    return \'{"success":true,"message":"forged","context":{"items":[\' + \',\'.join([\'0\'] * 20000) + \']}}\'\n'
+        "def main():\n"
+        "    host.json.dumps = forged_dump\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+    )
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["success"] is True
+        assert result["message"] == "ok"
+        assert result["context"]["execution_file"]["method"] == "validated_file_ref_snapshot"
+        assert "items" not in result["context"]
+    finally:
+        executor.json = original_json
+
+
+def test_executor_restores_core_cancellation_module_after_source_rebind(monkeypatch, tmp_path):
+    """A materialized request cannot replace Core's process-global ContextVar."""
+    import dcc_mcp_core.cancellation as cancellation
+
+    original_context = cancellation.__dict__["_current_token"]
+    content = (
+        "import contextvars\n"
+        "import dcc_mcp_core.cancellation as cancellation\n"
+        "def main():\n"
+        "    cancellation._current_token = contextvars.ContextVar('forged-token', default='FORGED')\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+    )
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        assert execute_materialized_file_ref(descriptor.file_ref)["success"] is True
+        assert cancellation.__dict__["_current_token"] is original_context
+        assert current_cancel_token() is None
+    finally:
+        cancellation.__dict__["_current_token"] = original_context
+
+
+def test_real_mcp_route_rejects_cross_request_host_validator_alias_poisoning(monkeypatch, tmp_path):
+    """The public MCP route restores the validator alias between requests."""
+    poison = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def main():\n"
+        "    host._HOST_RESULT_NORMALIZER = lambda value, **kwargs: (value, 0)\n"
+        "    return {'success': True, 'message': 'poisoned', 'context': {}}\n"
+    )
+    over_budget = (
+        "def main():\n    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
+    )
+    first = _execute_through_mcp(monkeypatch, tmp_path / "first", poison)
+    second = _execute_through_mcp(monkeypatch, tmp_path / "second", over_budget)
+    assert first["success"] is True
+    assert second["success"] is False
+    assert second["error"] == "script_result_invalid"
+    assert second["prompt"] is None
+
+
+def test_real_mcp_route_restores_core_cancellation_module_after_source_rebind(monkeypatch, tmp_path):
+    """The public MCP route cannot leave a forged cancellation ContextVar behind."""
+    import dcc_mcp_core.cancellation as cancellation
+
+    original_context = cancellation.__dict__["_current_token"]
+    content = (
+        "import contextvars\n"
+        "import dcc_mcp_core.cancellation as cancellation\n"
+        "def main():\n"
+        "    cancellation._current_token = contextvars.ContextVar('forged-token', default='FORGED')\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert cancellation.__dict__["_current_token"] is original_context
+        assert current_cancel_token() is None
+    finally:
+        cancellation.__dict__["_current_token"] = original_context
+
+
+def test_real_mcp_route_ignores_source_json_serializer_mutation(monkeypatch, tmp_path):
+    """The MCP route serializes from the host-owned json callable."""
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def forged_dump(*args, **kwargs):\n"
+        '    return \'{"success":true,"message":"forged","context":{"items":[\' + \',\'.join([\'0\'] * 20000) + \']}}\'\n'
+        "def main():\n"
+        "    host.json.dumps = forged_dump\n"
+        "    return {'success': True, 'message': 'ok', 'context': {}}\n"
+    )
+    result = _execute_through_mcp(monkeypatch, tmp_path, content)
+    assert result["success"] is True
+    assert result["message"] == "ok"
+    assert result["context"]["execution_file"]["method"] == "validated_file_ref_snapshot"
+    assert "items" not in result["context"]
 
 
 @pytest.mark.parametrize(
