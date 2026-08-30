@@ -34,11 +34,12 @@ ownership, size, UTF-8 encoding, digest, expiry, and a stable file snapshot.
 The full security and expiry check is repeated immediately before main-thread
 dispatch. Execution remains bound to the validated function definition, its
 prefix helpers/imports, and its prefix globals. The adapter invokes that
-host-owned entrypoint and snapshots its strict JSON result before executing
-suffix source once in a quarantined side-effect phase, so rebinding,
-object/module attributes, and mutable aliases in suffix source cannot change the
-captured behavior or result, and suffix failures do not clobber the validated
-`main()` response.
+host-owned entrypoint, snapshots its strict JSON result when valid, and executes
+suffix source exactly once after every source-entered `main()` attempt in a
+quarantined side-effect phase. Rebinding, object/module attributes, and mutable
+aliases in suffix source cannot change the captured behavior or result, and
+suffix failures do not clobber the main outcome (including a stable rejection
+for invalid results).
 Cancellation is propagated only from the exact host token and job captured
 before source entry; source-installed ambient tokens are rejected as execution
 failures. Results
@@ -55,7 +56,7 @@ contracts return stable error codes without exposing host paths.
 | Missing/extra fields, inline/path/mode input, wrong scope, or expired | `file_ref_invalid`, `file_ref_scope_denied`, or `file_ref_expired` | No |
 | Link, hardlink, replacement, identity, size, or digest drift | Stable `file_ref_*` integrity error | No |
 | Non-UTF-8 source, invalid syntax, or invalid fixed entry contract | Stable `script_*` error with rematerialization prompt | No |
-| Exception, forged adapter/cancellation error, or invalid/over-budget result after source entry | Stable `script_*` error without retry/rematerialization prompt | Yes |
+| Exception, forged adapter/cancellation error, or invalid/over-budget result after source entry | Stable `script_*` error without retry/rematerialization prompt; suffix still runs once | Yes |
 
 Create or open a project, close only a clean project, save the active project
 or save to an explicit `.spp` path, and reload its mesh through Painter's
