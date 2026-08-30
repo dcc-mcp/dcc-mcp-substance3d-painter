@@ -599,12 +599,10 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_module_snapshot = MappingProxyType(dict(host_module_globals))
     host_module_name = __name__
     host_package_name = host_module_name.rpartition(".")[0]
-    # Importing the documented executor alias must return a request object, not
-    # the canonical module whose ``json`` binding is restored after return.  A
-    # source-created callback may retain this facade, but it can only retain the
-    # request-private JSON package as well.
+    # The executor module has no source-facing API.  Keep this request facade
+    # intentionally minimal: copying canonical functions would expose their
+    # ``__globals__`` dictionaries to callbacks that outlive this request.
     request_host_module = ModuleType(host_module_name)
-    request_host_module.__dict__.update(host_module_snapshot)
     request_host_module.json = isolated_json
     request_host_package = ModuleType(host_package_name)
     request_host_package.materialized_script_executor = request_host_module
@@ -645,11 +643,10 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     host_contexts = (_HOST_CANCEL_CONTEXT, _HOST_JOB_CONTEXT)
     host_cancel_token = host_contexts[0].get()
     host_job = host_contexts[1].get()
-    # Source can import this module and rebind the public names.  Save the
-    # original bindings and restore them after both source phases so one
-    # materialized script cannot poison later requests.
-    # Materialized code is intentionally allowed to import the host modules, so
-    # keep a shallow snapshot of the executor and cancellation module bindings.
+    # Reflective source can still reach canonical modules through same-process
+    # Python state.  Save their original bindings and restore them after both
+    # source phases so one materialized script cannot poison later requests.
+    # Keep a shallow snapshot of the executor and cancellation module bindings.
     # Re-applying these dictionaries after each source phase prevents a
     # re-bound ContextVar/function/module alias from becoming process-global
     # state for the next request.  The validator is rebuilt from the immutable
@@ -672,9 +669,9 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         host_json_module.JSONEncoder = host_json_encoder
         host_json_module.JSONDecoder = host_json_decoder
         # The default encoder/decoder carry mutable per-instance caches.  Do
-        # not restore source-reachable objects by reference: a materialized
-        # request could already have changed their internals through an
-        # imported executor alias.  Rebuild pristine stdlib defaults instead.
+        # not restore source-reachable objects by reference: reflective source
+        # could already have changed their internals. Rebuild pristine stdlib
+        # defaults instead.
         host_json_module._default_encoder = host_json_encoder()
         host_json_module._default_decoder = host_json_decoder()
         host_json_encoder_module.JSONEncoder = host_json_encoder_module_encoder

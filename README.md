@@ -95,11 +95,12 @@ FileRef check immediately before dispatch, clones and invokes the validated
 function with its prefix globals through a host callable captured before source
 entry, snapshots its strict JSON result when valid, and executes suffix source
 exactly once after every source-entered `main()` attempt in a quarantined
-side-effect phase. Direct `json` and executor-module imports resolve to
-request-private aliases; a retained executor alias cannot regain the canonical
-host JSON package after return. Prefix or suffix rebinding cannot change the
-captured entrypoint behavior or result, and suffix failures do not clobber the
-main outcome (including a stable rejection for invalid results).
+side-effect phase. Direct `json` imports and executor-module imports resolve to
+request-private JSON state. The executor import is a minimal facade with no
+executor callables or canonical module state, so a retained facade cannot regain
+host globals after return. Prefix or suffix rebinding cannot change the captured
+entrypoint behavior or result, and suffix failures do not clobber the main
+outcome (including a stable rejection for invalid results).
 The suffix is side-effect-only: a `main()` that requires a helper, import, or
 mutable initialization introduced only by the suffix is rejected with the
 stable `script_suffix_dependency` error, so valid scripts must define those

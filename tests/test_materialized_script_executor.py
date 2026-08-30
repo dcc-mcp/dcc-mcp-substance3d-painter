@@ -455,7 +455,8 @@ def test_executor_uses_host_entrypoint_boundary_captured_before_prefix(monkeypat
     marker = "_dcc_mcp_rebound_host_invoker_marker"
     content = (
         "import builtins\n"
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def forged(entrypoint):\n"
         f"    builtins.{marker} = True\n"
         "    return {'success': True, 'message': 'forged', 'context': {}}\n"
@@ -478,7 +479,8 @@ def test_real_mcp_route_uses_host_entrypoint_boundary_captured_before_prefix(mon
     marker = "_dcc_mcp_route_rebound_host_invoker_marker"
     content = (
         "import builtins\n"
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def forged(entrypoint):\n"
         f"    builtins.{marker} = True\n"
         "    return {'success': True, 'message': 'forged', 'context': {}}\n"
@@ -542,7 +544,9 @@ def test_real_mcp_route_sanitizes_source_forged_adapter_errors_without_retry_pro
     marker = "_dcc_mcp_forged_error_side_effect_marker"
     content = (
         "import builtins\n"
-        "from dcc_mcp_substance3d_painter.materialized_script_executor import MaterializedScriptRejected\n"
+        "import sys\n"
+        "MaterializedScriptRejected = "
+        "sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor'].MaterializedScriptRejected\n"
         "def main():\n"
         f"    builtins.{marker} = True\n"
         f"    raise {forged_exception}\n"
@@ -980,7 +984,8 @@ def test_executor_restores_host_cancel_state_after_source_rebind(monkeypatch, tm
     reset = set_cancel_token(host_token)
     original_setter = executor.set_cancel_token
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "from dcc_mcp_core.cancellation import CancelToken, set_cancel_token\n"
         "def main():\n"
         "    forged = CancelToken(job_id='source-forged')\n"
@@ -1003,7 +1008,8 @@ def test_real_mcp_route_restores_host_cancel_api_after_source_rebind(monkeypatch
     """The MCP route must leave cancellation state/API intact after a source attack."""
     original_setter = executor.set_cancel_token
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "from dcc_mcp_core.cancellation import CancelToken, set_cancel_token\n"
         "def main():\n"
         "    forged = CancelToken(job_id='source-forged')\n"
@@ -1025,7 +1031,8 @@ def test_executor_restores_host_cancel_state_after_suffix_rebind(monkeypatch, tm
     reset = set_cancel_token(host_token)
     original_setter = executor.set_cancel_token
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "from dcc_mcp_core.cancellation import CancelToken, set_cancel_token\n"
         "def main():\n"
         "    return {'success': True, 'message': 'ok', 'context': {}}\n"
@@ -1059,7 +1066,8 @@ def test_real_mcp_route_keeps_result_validator_outside_source_writable_state(mon
     sentinel = object()
     originals = {name: getattr(executor, name, sentinel) for name in attacked_names}
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._require_strict_json = lambda value: None\n"
         "    host._reject = lambda *args, **kwargs: None\n"
@@ -1127,7 +1135,8 @@ def test_executor_rejects_cross_request_host_validator_alias_poisoning(monkeypat
     missing = object()
     original_alias = getattr(executor, "_HOST_RESULT_NORMALIZER", missing)
     poison = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._HOST_RESULT_NORMALIZER = lambda value, **kwargs: (value, 0)\n"
         "    return {'success': True, 'message': 'poisoned', 'context': {}}\n"
@@ -1193,7 +1202,8 @@ def test_executor_restores_core_cancellation_module_after_source_rebind(monkeypa
 def test_real_mcp_route_rejects_cross_request_host_validator_alias_poisoning(monkeypatch, tmp_path):
     """The public MCP route restores the validator alias between requests."""
     poison = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._HOST_RESULT_NORMALIZER = lambda value, **kwargs: (value, 0)\n"
         "    return {'success': True, 'message': 'poisoned', 'context': {}}\n"
@@ -1300,7 +1310,8 @@ def test_executor_rejects_over_budget_result_when_source_rebinds_module_validato
     missing = object()
     original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
@@ -1321,7 +1332,8 @@ def test_real_mcp_route_rejects_over_budget_result_when_source_rebinds_module_va
     missing = object()
     original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
@@ -1344,7 +1356,8 @@ def test_executor_keeps_postprocessed_result_when_suffix_rebinds_module_validato
     missing = object()
     original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
         "host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
@@ -1368,7 +1381,8 @@ def test_real_mcp_route_keeps_postprocessed_result_when_suffix_rebinds_module_va
     missing = object()
     original_alias = getattr(executor, "_HOST_NORMALIZE_RESULT", missing)
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
         "host._HOST_NORMALIZE_RESULT = lambda *args, **kwargs: ({'success': True, 'message': 'bypassed', 'context': {}}, 0)\n"
@@ -1390,7 +1404,8 @@ def test_real_mcp_route_keeps_postprocessed_result_when_suffix_rebinds_module_va
 def test_executor_rejects_over_budget_result_when_source_mutates_validator_defaults(monkeypatch, tmp_path):
     original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
@@ -1406,7 +1421,8 @@ def test_executor_rejects_over_budget_result_when_source_mutates_validator_defau
 def test_real_mcp_route_rejects_over_budget_result_when_source_mutates_validator_defaults(monkeypatch, tmp_path):
     original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
         "    return {'success': True, 'message': 'over-budget', 'context': {'items': [0] * 20000}}\n"
@@ -1424,7 +1440,8 @@ def test_real_mcp_route_rejects_over_budget_result_when_source_mutates_validator
 def test_executor_keeps_postprocessed_result_when_suffix_mutates_validator_defaults(monkeypatch, tmp_path):
     original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
         "host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
@@ -1443,7 +1460,8 @@ def test_executor_keeps_postprocessed_result_when_suffix_mutates_validator_defau
 def test_real_mcp_route_keeps_postprocessed_result_when_suffix_mutates_validator_defaults(monkeypatch, tmp_path):
     original_defaults = dict(executor._normalize_result.__kwdefaults__ or {})
     content = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
         "host._normalize_result.__kwdefaults__['_result_node_limit'] = 10**9\n"
@@ -1678,6 +1696,36 @@ def test_executor_keeps_delayed_host_alias_on_request_private_json(monkeypatch, 
         json.JSONEncoder = original_encoder
 
 
+def test_executor_facade_does_not_leak_canonical_globals_to_delayed_source(monkeypatch, tmp_path):
+    """A copied facade callable must not reopen canonical executor globals."""
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import threading\n"
+        "import time\n"
+        "leaked_callable = getattr(host, 'execute_materialized_file_ref', None)\n"
+        "class EvilEncoder:\n"
+        "    pass\n"
+        "def poison():\n"
+        "    time.sleep(0.05)\n"
+        "    if leaked_callable is not None:\n"
+        "        leaked_callable.__globals__['json'].JSONEncoder = EvilEncoder\n"
+        "def main():\n"
+        "    threading.Thread(target=poison, daemon=True).start()\n"
+        "    return {'success': True, 'message': 'validated', "
+        "'context': {'callable_exposed': leaked_callable is not None}}\n"
+    )
+    original_encoder = json.JSONEncoder
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["message"] == "validated"
+        assert result["context"]["callable_exposed"] is False
+        time.sleep(0.1)
+        assert json.JSONEncoder is original_encoder
+    finally:
+        json.JSONEncoder = original_encoder
+
+
 def test_real_mcp_route_prevents_delayed_source_thread_from_poisoning_json_serializer_state(monkeypatch, tmp_path):
     """The MCP route must remain isolated after a source daemon outlives main()."""
     content = (
@@ -1725,6 +1773,36 @@ def test_real_mcp_route_keeps_delayed_host_alias_on_request_private_json(monkeyp
         result = _execute_through_mcp(monkeypatch, tmp_path, content)
         assert result["success"] is True
         assert result["message"] == "validated"
+        time.sleep(0.1)
+        assert json.JSONEncoder is original_encoder
+    finally:
+        json.JSONEncoder = original_encoder
+
+
+def test_real_mcp_route_facade_does_not_leak_canonical_globals_to_delayed_source(monkeypatch, tmp_path):
+    """The async Painter route must not expose a canonical-globals callable."""
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import threading\n"
+        "import time\n"
+        "leaked_callable = getattr(host, 'execute_materialized_file_ref', None)\n"
+        "class EvilEncoder:\n"
+        "    pass\n"
+        "def poison():\n"
+        "    time.sleep(0.05)\n"
+        "    if leaked_callable is not None:\n"
+        "        leaked_callable.__globals__['json'].JSONEncoder = EvilEncoder\n"
+        "def main():\n"
+        "    threading.Thread(target=poison, daemon=True).start()\n"
+        "    return {'success': True, 'message': 'validated', "
+        "'context': {'callable_exposed': leaked_callable is not None}}\n"
+    )
+    original_encoder = json.JSONEncoder
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated"
+        assert result["context"]["callable_exposed"] is False
         time.sleep(0.1)
         assert json.JSONEncoder is original_encoder
     finally:
@@ -1820,8 +1898,10 @@ def test_real_mcp_route_preserves_snapshot_after_frame_walk_mutates_snapshot_fre
 def test_executor_restores_fresh_json_decoder_state_between_requests(monkeypatch, tmp_path):
     """Mutable decoder internals reached through the executor alias must not survive."""
     original_decoder = executor.json._default_decoder
+    original_scan_once = original_decoder.scan_once
     first = (
-        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import sys\n"
+        "host = sys.modules['dcc_mcp_substance3d_painter.materialized_script_executor']\n"
         "def main():\n"
         "    host.json._default_decoder.scan_once = lambda value, index: ({}, len(value))\n"
         "    return {'success': True, 'message': 'first', 'context': {}}\n"
@@ -1836,6 +1916,7 @@ def test_executor_restores_fresh_json_decoder_state_between_requests(monkeypatch
         assert executor.json.loads('{"verified": true}') == {"verified": True}
         assert executor.json._default_decoder is not original_decoder
     finally:
+        original_decoder.scan_once = original_scan_once
         executor.json._default_decoder = original_decoder
 
 
