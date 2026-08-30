@@ -363,12 +363,6 @@ def _future_flags(syntax: ast.Module) -> int:
     return flags
 
 
-def _invoke_entrypoint(entrypoint: FunctionType) -> Any:
-    """Invoke materialized code from a frame with no validator locals."""
-
-    return entrypoint()
-
-
 def _execute_suffix(compiled_suffix: Any, namespace: dict[str, Any]) -> None:
     """Run suffix code from a frame with no executor state in its locals."""
 
@@ -601,12 +595,29 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         _reject("script_source_invalid")
     isolated_json = _new_isolated_json_module()
     original_import = builtins.__import__
+    host_module_globals = globals()
+    host_module_snapshot = MappingProxyType(dict(host_module_globals))
+    host_module_name = __name__
+    host_package_name = host_module_name.rpartition(".")[0]
+    # Importing the documented executor alias must return a request object, not
+    # the canonical module whose ``json`` binding is restored after return.  A
+    # source-created callback may retain this facade, but it can only retain the
+    # request-private JSON package as well.
+    request_host_module = ModuleType(host_module_name)
+    request_host_module.__dict__.update(host_module_snapshot)
+    request_host_module.json = isolated_json
+    request_host_package = ModuleType(host_package_name)
+    request_host_package.materialized_script_executor = request_host_module
 
     def isolated_import(
         name: str, globals: Any = None, locals: Any = None, fromlist: tuple[str, ...] = (), level: int = 0
     ):
         if level == 0 and (name == "json" or name.startswith("json.")):
             return isolated_json
+        if level == 0 and name == host_module_name:
+            return request_host_module if fromlist else request_host_package
+        if level == 0 and name == host_package_name and "materialized_script_executor" in (fromlist or ()):
+            return request_host_package
         return original_import(name, globals, locals, fromlist, level)
 
     materialized_builtins = dict(vars(builtins))
@@ -637,14 +648,12 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     # Source can import this module and rebind the public names.  Save the
     # original bindings and restore them after both source phases so one
     # materialized script cannot poison later requests.
-    host_module_globals = globals()
     # Materialized code is intentionally allowed to import the host modules, so
     # keep a shallow snapshot of the executor and cancellation module bindings.
     # Re-applying these dictionaries after each source phase prevents a
     # re-bound ContextVar/function/module alias from becoming process-global
     # state for the next request.  The validator is rebuilt from the immutable
     # code/default snapshot below rather than reusing a source-mutable object.
-    host_module_snapshot = MappingProxyType(dict(host_module_globals))
     cancellation_module_globals = current_cancel_token.__globals__
     cancellation_module_snapshot = MappingProxyType(dict(cancellation_module_globals))
     host_json_module = json
@@ -672,6 +681,10 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         host_json_decoder_module.JSONDecoder = host_json_decoder_module_decoder
 
     host_function_type = _FUNCTION_TYPE
+    # A C-level type descriptor has no source-writable Python globals or code
+    # object.  Capture it before prefix execution so rebinding any executor
+    # module name cannot replace the callable that invokes the fixed main().
+    host_function_call = host_function_type.__call__
     host_dict_type = _DICT_TYPE
     host_bool_type = _BOOL_TYPE
     host_rejected_type = _REJECTED_TYPE
@@ -729,10 +742,6 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     prefix_names: frozenset[str] = frozenset()
     entrypoint: FunctionType | None = None
     try:
-        # Requests import a private json package, and the documented executor
-        # alias must observe that same request-owned package.  Otherwise
-        # ``executor.json`` exposes mutable process-global decoder state.
-        host_module_globals["json"] = isolated_json
         exec(compiled_prefix, namespace, namespace)
         prefix_names = frozenset(namespace)
         exposed_entrypoint = namespace.get("main")
@@ -749,7 +758,7 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
         entrypoint_globals["main"] = entrypoint
         source_entered = True
         try:
-            result = _invoke_entrypoint(entrypoint)
+            result = host_function_call(entrypoint)
         except host_cancelled_type as exc:
             cancellation_is_host_owned = (
                 host_contexts[0].get() is host_cancel_token
@@ -899,7 +908,6 @@ def execute_materialized_file_ref(file_ref: Mapping[str, Any]) -> dict[str, Any]
     # result is read from its namespace and failures are recorded only in logs.
     if source_entered:
         try:
-            host_module_globals["json"] = isolated_json
             _execute_suffix(compiled_suffix, namespace)
         except BaseException:
             logger.warning("Materialized suffix failed after source entry; preserving main outcome.")

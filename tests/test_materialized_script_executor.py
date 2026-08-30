@@ -450,6 +450,52 @@ def test_materialize_script_rejects_main_rebinding_through_the_real_mcp_route(mo
             delattr(__import__("builtins"), marker)
 
 
+def test_executor_uses_host_entrypoint_boundary_captured_before_prefix(monkeypatch, tmp_path):
+    """Prefix code cannot replace the host callable that invokes fixed main()."""
+    marker = "_dcc_mcp_rebound_host_invoker_marker"
+    content = (
+        "import builtins\n"
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def forged(entrypoint):\n"
+        f"    builtins.{marker} = True\n"
+        "    return {'success': True, 'message': 'forged', 'context': {}}\n"
+        "host.execute_materialized_file_ref.__globals__['_invoke_entrypoint'] = forged\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated main', 'context': {}}\n"
+    )
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["message"] == "validated main"
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
+def test_real_mcp_route_uses_host_entrypoint_boundary_captured_before_prefix(monkeypatch, tmp_path):
+    """The async Painter route also invokes the fixed main through the host boundary."""
+    marker = "_dcc_mcp_route_rebound_host_invoker_marker"
+    content = (
+        "import builtins\n"
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "def forged(entrypoint):\n"
+        f"    builtins.{marker} = True\n"
+        "    return {'success': True, 'message': 'forged', 'context': {}}\n"
+        "host.execute_materialized_file_ref.__globals__['_invoke_entrypoint'] = forged\n"
+        "def main():\n"
+        "    return {'success': True, 'message': 'validated main', 'context': {}}\n"
+    )
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated main"
+        assert not hasattr(__import__("builtins"), marker)
+    finally:
+        if hasattr(__import__("builtins"), marker):
+            delattr(__import__("builtins"), marker)
+
+
 @pytest.mark.parametrize(
     "attack",
     [
@@ -1606,6 +1652,32 @@ def test_executor_prevents_delayed_source_thread_from_poisoning_json_serializer_
         json.JSONEncoder = original_encoder
 
 
+def test_executor_keeps_delayed_host_alias_on_request_private_json(monkeypatch, tmp_path):
+    """A retained executor alias must never regain the canonical JSON package."""
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import threading\n"
+        "import time\n"
+        "class EvilEncoder:\n"
+        "    pass\n"
+        "def poison():\n"
+        "    time.sleep(0.05)\n"
+        "    host.json.JSONEncoder = EvilEncoder\n"
+        "def main():\n"
+        "    threading.Thread(target=poison, daemon=True).start()\n"
+        "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+    )
+    original_encoder = json.JSONEncoder
+    try:
+        descriptor, _ = _materialized(monkeypatch, tmp_path, content)
+        result = execute_materialized_file_ref(descriptor.file_ref)
+        assert result["message"] == "validated"
+        time.sleep(0.1)
+        assert json.JSONEncoder is original_encoder
+    finally:
+        json.JSONEncoder = original_encoder
+
+
 def test_real_mcp_route_prevents_delayed_source_thread_from_poisoning_json_serializer_state(monkeypatch, tmp_path):
     """The MCP route must remain isolated after a source daemon outlives main()."""
     content = (
@@ -1618,6 +1690,32 @@ def test_real_mcp_route_prevents_delayed_source_thread_from_poisoning_json_seria
         "def poison():\n"
         "    time.sleep(0.05)\n"
         "    json.JSONEncoder = EvilEncoder\n"
+        "def main():\n"
+        "    threading.Thread(target=poison, daemon=True).start()\n"
+        "    return {'success': True, 'message': 'validated', 'context': {}}\n"
+    )
+    original_encoder = json.JSONEncoder
+    try:
+        result = _execute_through_mcp(monkeypatch, tmp_path, content)
+        assert result["success"] is True
+        assert result["message"] == "validated"
+        time.sleep(0.1)
+        assert json.JSONEncoder is original_encoder
+    finally:
+        json.JSONEncoder = original_encoder
+
+
+def test_real_mcp_route_keeps_delayed_host_alias_on_request_private_json(monkeypatch, tmp_path):
+    """The async Painter route must not return a retained alias to host JSON."""
+    content = (
+        "import dcc_mcp_substance3d_painter.materialized_script_executor as host\n"
+        "import threading\n"
+        "import time\n"
+        "class EvilEncoder:\n"
+        "    pass\n"
+        "def poison():\n"
+        "    time.sleep(0.05)\n"
+        "    host.json.JSONEncoder = EvilEncoder\n"
         "def main():\n"
         "    threading.Thread(target=poison, daemon=True).start()\n"
         "    return {'success': True, 'message': 'validated', 'context': {}}\n"
