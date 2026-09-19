@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.5.1...v0.6.0) (2026-09-19)
+
+
+### Features
+
+* **skills:** add material, compositing, and lighting domain skills ([#41](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/issues/41)) ([ee616e8](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/ee616e81d372607066405aeef4331ffb9a0a86ca))
+
 ## [0.5.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.5.0...v0.5.1) (2026-08-30)
 
 
