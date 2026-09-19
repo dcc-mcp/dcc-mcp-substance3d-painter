@@ -89,6 +89,11 @@ def main(
                 layer_uid=int(layer_uid),
                 channel=channel_name,
                 active_channels=sorted(active),
+                prompt=(
+                    "This layer does not contribute the target channel. Call "
+                    "painter_material__set_layer_channels to activate "
+                    f"{channel_name} before setting its value."
+                ),
             )
         return skill_success(
             "Set Painter layer channel value",

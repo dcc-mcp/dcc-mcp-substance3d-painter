@@ -33,6 +33,9 @@ contributes to. This skill works directly on that model:
   whether a layer writes colour, roughness, height, and so on.
 - `set_layer_channel_value` writes one uniform value into one channel of an
   existing layer. This is the primitive behind a flat fill; it does not paint.
+  The target channel must already be one the layer contributes; use
+  `set_layer_channels` to activate it first, otherwise this tool fails with
+  `HOST_READBACK_MISMATCH` and a prompt naming the channel to activate.
 
 Channel names are resolved against `textureset.ChannelType` on the running host
 rather than being hard-coded, because the available channels depend on the

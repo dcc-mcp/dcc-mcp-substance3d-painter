@@ -36,11 +36,12 @@ def main(
 
     try:
         target_stack = resolve_stack(textureset, texture_set, stack)
+        inventory = _channel_inventory(target_stack)
         return skill_success(
             "Inspected Painter material channels",
             stack=str(target_stack),
-            channel_count=len(_channel_inventory(target_stack)),
-            channels=_channel_inventory(target_stack),
+            channel_count=len(inventory),
+            channels=inventory,
             available_channel_types=sorted(enum_members(getattr(textureset, "ChannelType", None))),
         )
     except (AttributeError, RuntimeError, TypeError, ValueError) as exc:

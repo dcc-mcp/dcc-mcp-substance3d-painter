@@ -119,6 +119,36 @@ def test_inspect_layer_compositing_reports_missing_layer(monkeypatch):
     assert result["error"] == "HOST_LAYER_NOT_FOUND"
 
 
+def test_inspect_layer_compositing_reports_null_mask_fields_when_accessors_absent(monkeypatch):
+    """A host missing mask accessors must yield null fields, not a failed inspection."""
+
+    node = _Node()
+    del node.has_mask
+    _install_host(monkeypatch, node=node)
+
+    result = _load("painter-compositing", "inspect_layer_compositing").main(layer_uid=7)
+
+    assert result["success"] is True
+    assert result["context"]["mask"] == {"has_mask": None, "enabled": None, "background": None}
+    # The rest of the inspection still reports normally.
+    assert result["context"]["visible"] is True
+
+
+def test_inspect_layer_compositing_reports_null_mask_fields_when_only_mask_absent(monkeypatch):
+    """Only get_mask_background missing: has_mask and enabled should still report."""
+
+    node = _Node()
+    node.has_mask = lambda: True
+    node.is_mask_enabled = lambda: True
+    del node.get_mask_background
+    _install_host(monkeypatch, node=node)
+
+    result = _load("painter-compositing", "inspect_layer_compositing").main(layer_uid=7)
+
+    assert result["success"] is True
+    assert result["context"]["mask"] == {"has_mask": True, "enabled": True, "background": None}
+
+
 def test_set_layer_visibility_is_confirmed_by_readback(monkeypatch):
     node = _Node(visible=True)
     _install_host(monkeypatch, node=node)
@@ -161,6 +191,166 @@ def test_set_layer_opacity_is_confirmed_by_readback(monkeypatch):
     assert result["success"] is True
     assert node.get_opacity() == 0.42
     assert result["context"]["opacity"] == 0.42
+
+
+def test_set_layer_opacity_reads_back_through_the_fresh_handle(monkeypatch):
+    """Readback must use the handle returned after the write, not the pre-write one.
+
+    find_node returns a NEW object on every call. The pre-write handle is left
+    un-mutated, so a tool that reuses the stale binding must fail here.
+    """
+
+    stack = _FakeStack()
+    written = {}
+
+    class _FreshNode(_Node):
+        def __init__(self, state):
+            self._state = state
+            self.uid_value = 7
+            self.has_mask = lambda: False
+            self.is_mask_enabled = lambda: False
+            self.get_mask_background = lambda: SimpleNamespace(name="Black")
+            self.get_name = lambda: "Layer"
+            self.get_type = lambda: SimpleNamespace(name="PaintLayer")
+            self.set_visible = self._set_visible
+            self.set_opacity = self._set_opacity
+            self.set_blending_mode = self._set_blending_mode
+
+        def uid(self):
+            return 7
+
+        def get_stack(self):
+            return stack
+
+        def is_visible(self):
+            return self._state["visible"]
+
+        def get_opacity(self):
+            return self._state["opacity"]
+
+        def get_blending_mode(self):
+            return SimpleNamespace(name=self._state["blending"])
+
+        def _set_visible(self, value):
+            written["visible"] = bool(value)
+
+        def _set_opacity(self, value):
+            written["opacity"] = float(value)
+
+        def _set_blending_mode(self, member):
+            written["blending"] = member
+
+    state = {"visible": True, "opacity": 1.0, "blending": "Normal"}
+    fresh_stack_state = {"visible": False, "opacity": 0.42, "blending": "Multiply"}
+    handles = []
+
+    def _get_node_by_uid(uid):
+        # First call is the pre-write handle; later calls are the post-write one.
+        state_used = state if not handles else fresh_stack_state
+        node = _FreshNode(state_used)
+        handles.append(node)
+        return [node]
+
+    project = ModuleType("substance_painter.project")
+    project.is_open = lambda: True
+    textureset = ModuleType("substance_painter.textureset")
+    textureset.get_active_stack = lambda: stack
+    textureset.all_texture_sets = lambda: []
+    layerstack = ModuleType("substance_painter.layerstack")
+    layerstack.get_node_by_uid = _get_node_by_uid
+    layerstack.BlendingMode = SimpleNamespace(
+        __members__={"Passthrough": "passthrough", "Normal": "normal", "Multiply": "multiply"}
+    )
+    monkeypatch.setitem(sys.modules, "substance_painter", ModuleType("substance_painter"))
+    monkeypatch.setitem(sys.modules, "substance_painter.project", project)
+    monkeypatch.setitem(sys.modules, "substance_painter.textureset", textureset)
+    monkeypatch.setitem(sys.modules, "substance_painter.layerstack", layerstack)
+
+    result = _load("painter-compositing", "set_layer_opacity").main(layer_uid=7, opacity=0.42)
+
+    # The write went to the pre-write handle, so the post-write state is 0.42
+    # only if readback consulted the fresh handle.
+    assert written["opacity"] == 0.42
+    assert result["success"] is True
+    assert result["context"]["opacity"] == 0.42
+    assert len(handles) == 2
+
+
+def test_set_layer_blending_mode_reads_back_through_the_fresh_handle(monkeypatch):
+    """Same fresh-handle guarantee for blending mode.
+
+    The pre-write handle is a stale snapshot: its setter records the write but
+    does not change what it reports. Only the freshly resolved handle reflects
+    the written mode, so reusing the stale binding must fail here.
+    """
+
+    stack = _FakeStack()
+    written = {}
+    member_to_name = {"passthrough": "Passthrough", "normal": "Normal", "multiply": "Multiply"}
+
+    class _Node2(_Node):
+        def __init__(self, *, fresh):
+            self._fresh = fresh
+            self.uid_value = 7
+            self.has_mask = lambda: False
+            self.is_mask_enabled = lambda: False
+            self.get_mask_background = lambda: SimpleNamespace(name="Black")
+            self.get_name = lambda: "Layer"
+            self.get_type = lambda: SimpleNamespace(name="PaintLayer")
+            self.set_visible = lambda value: None
+            self.set_opacity = lambda value: None
+            self.set_blending_mode = self._set_blending_mode
+
+        def uid(self):
+            return 7
+
+        def get_stack(self):
+            return stack
+
+        def is_visible(self):
+            return True
+
+        def get_opacity(self):
+            return 1.0
+
+        def get_blending_mode(self):
+            # A fresh handle reports the written mode; a stale one still reports Normal.
+            name = "Normal"
+            if self._fresh and "blending" in written:
+                name = member_to_name[written["blending"]]
+            return SimpleNamespace(name=name)
+
+        def _set_blending_mode(self, member):
+            written["blending"] = member
+
+    handles = []
+
+    def _get_node_by_uid(uid):
+        # First call is the pre-write handle; later calls are post-write ones.
+        node = _Node2(fresh=bool(handles))
+        handles.append(node)
+        return [node]
+
+    project = ModuleType("substance_painter.project")
+    project.is_open = lambda: True
+    textureset = ModuleType("substance_painter.textureset")
+    textureset.get_active_stack = lambda: stack
+    textureset.all_texture_sets = lambda: []
+    layerstack = ModuleType("substance_painter.layerstack")
+    layerstack.get_node_by_uid = _get_node_by_uid
+    layerstack.BlendingMode = SimpleNamespace(
+        __members__={"Passthrough": "passthrough", "Normal": "normal", "Multiply": "multiply"}
+    )
+    monkeypatch.setitem(sys.modules, "substance_painter", ModuleType("substance_painter"))
+    monkeypatch.setitem(sys.modules, "substance_painter.project", project)
+    monkeypatch.setitem(sys.modules, "substance_painter.textureset", textureset)
+    monkeypatch.setitem(sys.modules, "substance_painter.layerstack", layerstack)
+
+    result = _load("painter-compositing", "set_layer_blending_mode").main(layer_uid=7, blending_mode="Multiply")
+
+    assert result["success"] is True
+    assert result["context"]["blending_mode"] == "Multiply"
+    assert len(handles) == 2
 
 
 def test_set_layer_opacity_detects_readback_mismatch(monkeypatch):

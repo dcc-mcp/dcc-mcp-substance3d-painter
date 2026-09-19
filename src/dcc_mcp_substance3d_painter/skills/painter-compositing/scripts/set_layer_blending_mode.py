@@ -90,7 +90,9 @@ def main(
                 "HOST_READBACK_MISMATCH",
                 layer_uid=int(layer_uid),
             )
-        actual = enum_name(getter())
+        # Read back through the freshly resolved handle, not the pre-write
+        # binding, otherwise the verification cannot detect a stale write.
+        actual = enum_name(readback.get_blending_mode())
         if actual.casefold() != enum_name(member).casefold():
             return skill_error(
                 "Painter blending-mode readback failed",

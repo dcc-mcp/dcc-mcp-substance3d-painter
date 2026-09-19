@@ -59,11 +59,15 @@ def main(
 
         opacity = _read(node, "get_opacity")
         blending_mode = _read(node, "get_blending_mode")
-        has_mask = bool(node.has_mask())
+        # Mask accessors go through _read so a host missing one reports null
+        # fields instead of failing the whole inspection.
+        has_mask = _read(node, "has_mask")
+        mask_enabled = _read(node, "is_mask_enabled")
+        mask_background = _read(node, "get_mask_background")
         mask = {
-            "has_mask": has_mask,
-            "enabled": bool(node.is_mask_enabled()) if has_mask else None,
-            "background": enum_name(node.get_mask_background()) if has_mask else None,
+            "has_mask": bool(has_mask) if has_mask is not None else None,
+            "enabled": bool(mask_enabled) if has_mask and mask_enabled is not None else None,
+            "background": enum_name(mask_background) if has_mask and mask_background is not None else None,
         }
         return skill_success(
             "Inspected Painter layer compositing state",

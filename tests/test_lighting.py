@@ -25,7 +25,8 @@ class _Environment:
     def __init__(self, *, exposure=0.0, rotation=0.0, env_url="env://studio", bg_url=None, writable=True):
         self._exposure = exposure
         self._rotation = rotation
-        self._env = SimpleNamespace(url=lambda: env_url)
+        # An unset map is modelled as a null resource id, matching Painter.
+        self._env = None if env_url is None else SimpleNamespace(url=lambda: env_url)
         self._bg = None if bg_url is None else SimpleNamespace(url=lambda: bg_url)
         self.writable = writable
 
@@ -96,6 +97,41 @@ def test_inspect_environment_reports_state_and_capabilities(environment):
     assert context["exposure"] == 1.5
     assert context["rotation"] == 0.25
     assert context["capabilities"]["exposure"] == {"readable": True, "writable": True}
+
+
+def test_readable_reflects_getter_presence_not_current_value(environment):
+    """A readable capability whose current value is empty must still report readable.
+
+    Regresses: `readable` was derived from the read value, so an unset
+    background texture looked like an unsupported read.
+    """
+
+    environment(_Environment(bg_url=None, env_url=None))
+
+    result = _load("painter-lighting", "inspect_environment").main()
+
+    assert result["success"] is True
+    capabilities = result["context"]["capabilities"]
+    assert capabilities["background_texture"]["readable"] is True
+    assert capabilities["environment_map"]["readable"] is True
+    assert result["context"]["background_texture"] is None
+    assert result["context"]["environment_map"] is None
+
+
+def test_readable_is_false_when_getter_absent(environment):
+    """Removing the getter must flip readable to False."""
+
+    env = _Environment(bg_url="bg://plate")
+    module = environment(env)
+    delattr(module, "get_background_texture")
+
+    result = _load("painter-lighting", "inspect_environment").main()
+
+    assert result["success"] is True
+    capabilities = result["context"]["capabilities"]
+    assert capabilities["background_texture"]["readable"] is False
+    # The other capabilities are unaffected.
+    assert capabilities["exposure"]["readable"] is True
 
 
 def test_inspect_environment_reports_unavailable_module(monkeypatch):
@@ -187,6 +223,30 @@ def test_set_environment_map_detects_readback_mismatch(environment, monkeypatch)
     assert result["success"] is False
     assert result["error"] == "HOST_READBACK_MISMATCH"
     assert result["context"]["actual"] == "env://old"
+
+
+def test_set_environment_map_distinguishes_bad_url_from_missing_capability(environment, monkeypatch):
+    """A malformed URL is a caller input error, not a host capability gap.
+
+    Regresses: from_url() shared the `except ValueError` with the environment
+    probing, so a bad URL reported environment_capability_unsupported.
+    """
+
+    environment(_Environment())
+    resource = ModuleType("substance_painter.resource")
+
+    def _from_url(value):
+        raise ValueError(f"invalid resource url: {value}")
+
+    resource.ResourceID = SimpleNamespace(from_url=_from_url)
+    monkeypatch.setitem(sys.modules, "substance_painter.resource", resource)
+
+    result = _load("painter-lighting", "set_environment_map").main(resource_url="not-a-resource-url")
+
+    assert result["success"] is False
+    assert result["error"] == "invalid_resource_url"
+    assert result["context"]["resource_url"] == "not-a-resource-url"
+    assert "invalid resource url" in result["context"]["detail"]
 
 
 def test_set_environment_map_rejects_empty_url(environment):

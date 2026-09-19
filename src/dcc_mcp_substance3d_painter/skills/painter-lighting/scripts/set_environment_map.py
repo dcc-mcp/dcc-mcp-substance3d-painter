@@ -19,11 +19,27 @@ def main(resource_url: str, **_kwargs):
 
     import substance_painter.resource as resource  # Lazy: Painter host only.
 
+    # from_url() rejects malformed URLs and non-resource schemes with ValueError.
+    # That is a caller input problem, not a host capability gap, so it is
+    # diagnosed separately from the environment probing below.
+    try:
+        identifier = resource.ResourceID.from_url(resolved_url)
+    except (TypeError, ValueError) as exc:
+        return skill_error(
+            "Invalid Painter environment resource URL",
+            "invalid_resource_url",
+            resource_url=resolved_url,
+            detail=str(exc),
+            prompt=(
+                "Pass a Painter resource URL, for example one returned by "
+                "painter_project__import_resource with the environment usage."
+            ),
+        )
+
     try:
         module = environment_module()
         setter = require_setter(module, "environment_map")
         getter = require_getter(module, "environment_map")
-        identifier = resource.ResourceID.from_url(resolved_url)
         setter(identifier)
         actual = getattr(getter(), "url", None)
         actual_url = str(actual()) if callable(actual) else None

@@ -43,6 +43,13 @@ a bounded set of known spellings and never guesses: if a capability is absent,
 the tool fails with `environment_capability_unsupported` and names what it
 looked for, rather than silently doing nothing.
 
+A malformed resource URL is a different failure and is reported as
+`invalid_resource_url`; it is a caller input error, not a host capability gap.
+Read `capabilities` from `inspect_environment` to see whether the running
+Painter build supports a given operation before attempting it. `readable` means
+the host exposes a getter, not that the current value is populated, so an unset
+background texture is still reported as readable.
+
 Exposure is a scalar in stops and rotation is expressed in turns on the interval
 `0.0` to `1.0`. Environment and background maps are addressed by Painter
 resource URL; import an `.hdr` or `.exr` file with

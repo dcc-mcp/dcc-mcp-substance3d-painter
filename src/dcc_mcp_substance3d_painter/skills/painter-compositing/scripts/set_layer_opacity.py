@@ -61,7 +61,9 @@ def main(
                 "HOST_READBACK_MISMATCH",
                 layer_uid=int(layer_uid),
             )
-        actual = float(getter())
+        # Read back through the freshly resolved handle, not the pre-write
+        # binding, otherwise the verification cannot detect a stale write.
+        actual = float(readback.get_opacity())
         if abs(actual - resolved_opacity) > _TOLERANCE:
             return skill_error(
                 "Painter layer opacity readback failed",

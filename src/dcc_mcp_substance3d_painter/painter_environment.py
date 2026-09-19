@@ -46,10 +46,18 @@ def environment_module():
 
 
 def _url_of(resource_id: Any) -> Optional[str]:
+    """Return a resource URL string, or ``None`` when unset or unavailable."""
+
     if resource_id is None:
         return None
-    url = getattr(resource_id, "url", None)
-    return str(url()) if callable(url) else None
+    getter = getattr(resource_id, "url", None)
+    if not callable(getter):
+        return None
+    try:
+        value = getter()
+    except (AttributeError, RuntimeError, TypeError, ValueError):
+        return None
+    return None if value is None else str(value)
 
 
 def _read(module, capability: str):
@@ -70,20 +78,26 @@ def _read(module, capability: str):
         return None
 
 
+def has_getter(module, capability: str) -> bool:
+    return resolve_callable(module, GETTER_CANDIDATES[capability]) is not None
+
+
 def has_setter(module, capability: str) -> bool:
     return resolve_callable(module, SETTER_CANDIDATES[capability]) is not None
 
 
 def read_state(module) -> dict[str, Any]:
-    """Return the current environment state plus the host's capabilities."""
+    """Return the current environment state plus the host's capabilities.
 
+    ``readable`` reflects whether the host exposes a getter, not whether the
+    current value happens to be empty: an unset background is still readable.
+    """
+
+    values = {capability: _read(module, capability) for capability in GETTER_CANDIDATES}
     return {
-        "environment_map": _read(module, "environment_map"),
-        "background_texture": _read(module, "background_texture"),
-        "exposure": _read(module, "exposure"),
-        "rotation": _read(module, "rotation"),
+        **values,
         "capabilities": {
-            capability: {"readable": _read(module, capability) is not None, "writable": has_setter(module, capability)}
+            capability: {"readable": has_getter(module, capability), "writable": has_setter(module, capability)}
             for capability in SETTER_CANDIDATES
         },
     }
