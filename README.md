@@ -118,6 +118,29 @@ response, including host-owned context and postcondition fields. Validation and
 normalization capabilities remain outside script-writable state. Source-entered
 failures never carry retry or rematerialization guidance.
 
+### Domain skills
+
+Alongside `painter-project`, the adapter bundles focused skills that map
+Painter's real native primitives onto their pipeline domains:
+
+- **`painter-material`** — channel-level material authoring: read a stack's
+  channel inventory, choose which channels a layer contributes, and write
+  uniform channel values.
+- **`painter-compositing`** — how a layer combines with the layers below it:
+  visibility, opacity, blending mode, and mask state.
+- **`painter-lighting`** — scene lighting. Painter has no light objects, so
+  lighting is the image-based environment: environment map, exposure, and
+  rotation.
+
+Every mutation is confirmed by reading the value back from Painter before the
+tool reports success. Where Painter exposes no readback for a value, the tool
+says so explicitly instead of implying verification it did not perform.
+
+Painter has no particle, dynamics, or animation system, so those domains have no
+native equivalent to expose. The closest real primitives are Painter's brush
+parameters and generators, and camera turntable plus texture-sequence export,
+which `painter-project` already covers.
+
 ## Development
 
 ```bash

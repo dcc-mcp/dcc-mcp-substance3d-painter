@@ -6,11 +6,64 @@ the host modules in after the embedded Painter runtime has loaded them.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping, Optional
 
 
 def enum_name(value: Any) -> str:
     return str(getattr(value, "name", value))
+
+
+def enum_members(enum_type: Any) -> dict[str, Any]:
+    """Return a host enum's ``name -> member`` mapping, or an empty mapping.
+
+    Painter exposes rich Python enums whose exact membership varies between
+    releases, so callers resolve member names against the running host instead
+    of hard-coding constants.
+    """
+
+    members = getattr(enum_type, "__members__", None)
+    if not isinstance(members, Mapping):
+        return {}
+    return dict(members)
+
+
+def resolve_enum_member(enum_type: Any, name: str) -> Optional[Any]:
+    """Resolve one host enum member by exact then case-insensitive name.
+
+    Returns ``None`` when the enum is missing or exposes no such member, letting
+    the caller report the members the running host actually supports.
+    """
+
+    if enum_type is None or name is None:
+        return None
+    members = enum_members(enum_type)
+    if not members:
+        return None
+    wanted = str(name).strip()
+    if wanted in members:
+        return members[wanted]
+    folded = wanted.casefold().replace("_", "")
+    for member_name, member in members.items():
+        if member_name.casefold().replace("_", "") == folded:
+            return member
+    return None
+
+
+def resolve_callable(module: Any, names: tuple[str, ...]) -> Optional[Any]:
+    """Return the first callable attribute of *module* among *names*.
+
+    Host module surfaces differ between Painter releases; probing a bounded set
+    of known aliases keeps a capability working across builds without inventing
+    API that the running host does not expose.
+    """
+
+    if module is None:
+        return None
+    for name in names:
+        candidate = getattr(module, name, None)
+        if callable(candidate):
+            return candidate
+    return None
 
 
 def node_summary(node: Any) -> dict[str, Any]:
@@ -95,7 +148,7 @@ def resolve_insert_position(
     return layerstack.InsertPosition.inside_node(reference, layerstack.NodeStack.Substack)
 
 
-def resource_url_from_effect(effect: Any) -> str | None:
+def resource_url_from_effect(effect: Any) -> Optional[str]:
     if enum_name(effect.get_type()) not in {"Generator", "GeneratorEffect", "GeneratorEffectNode"}:
         return None
     try:
