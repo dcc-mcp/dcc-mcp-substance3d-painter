@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.6.0...v0.6.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* report the Install SOP schema version, not the artifact revision ([373c694](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/373c694a48ccf4cb9e9c9f7f0189b49eb7d9240d))
+
 ## [0.6.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.5.1...v0.6.0) (2026-09-19)
 
 
