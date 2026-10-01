@@ -49,6 +49,22 @@ DCC_TYPE = "substance3d_painter"
 COMMAND = "dcc-mcp-substance3d-painter"
 MIN_CORE_VERSION = "0.20.15"
 MIN_PAINTER_VERSION = (7, 2)
+
+# `INSTALL_SOP_SCHEMA_VERSION` is the revision of the published Install SOP schema
+# *artifact* (`adapter-install-sop-vN.schema.json`), 2 since dcc-mcp-core 0.20.36.
+# It is NOT the value of the `schema_version` field that the artifact pins on a
+# report document: that field is a separate, stable counter declared as
+# `properties.schema_version.const` and stays at 1, because artifact revisions only
+# add optional members. The two are named separately here -- conflating them makes
+# every lifecycle report fail validation against the schema it claims to follow the
+# moment the resolved core advances past 0.20.36.
+ARTIFACT_SCHEMA_VERSION = INSTALL_SOP_SCHEMA_VERSION
+
+# Value of the report document's own `schema_version` field. Kept in sync with
+# `load_install_sop_schema()["properties"]["schema_version"]["const"]` by
+# tests/test_install_hardening.py, which fails when the resolved core drifts.
+SCHEMA_VERSION = 1
+
 _PROFILE_ENV = "DCC_MCP_SUBSTANCE3D_PAINTER_PROFILE"
 _PYTHON_ENV = "DCC_MCP_INSTALL_PYTHON"
 _LOADER_NAME = "dcc_mcp_substance3d_painter_plugin.py"
@@ -1210,7 +1226,7 @@ def _resolve_context(
 
 def _base_result(ctx: InstallContext, *, status: str, verify: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION,
         "status": status,
         "dcc_type": DCC_TYPE,
         "adapter_version": __version__,
@@ -2187,7 +2203,7 @@ def _failure_result(
         retry_command.extend(["--dcc-path", dcc_path])
     retry_command.extend(["--python", python_path or environ.get(_PYTHON_ENV) or sys.executable, "--json"])
     result = {
-        "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+        "schema_version": SCHEMA_VERSION,
         "status": "failed",
         "dcc_type": DCC_TYPE,
         "adapter_version": __version__,

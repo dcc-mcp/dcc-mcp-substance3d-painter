@@ -8,10 +8,10 @@ import sys
 from typing import Optional, Sequence
 
 import dcc_mcp_core
-from dcc_mcp_core.deployment import INSTALL_EXIT_PREFLIGHT, INSTALL_SOP_SCHEMA_VERSION
+from dcc_mcp_core.deployment import INSTALL_EXIT_PREFLIGHT
 
 from dcc_mcp_substance3d_painter.__version__ import __version__
-from dcc_mcp_substance3d_painter._installer import COMMAND, DCC_TYPE, run_lifecycle
+from dcc_mcp_substance3d_painter._installer import COMMAND, DCC_TYPE, SCHEMA_VERSION, run_lifecycle
 
 
 class _ArgumentFailure(ValueError):
@@ -42,7 +42,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args = _parser().parse_args(raw_arguments)
     except _ArgumentFailure:
         result = {
-            "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+            "schema_version": SCHEMA_VERSION,
             "status": "failed",
             "dcc_type": DCC_TYPE,
             "adapter_version": __version__,

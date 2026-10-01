@@ -127,6 +127,58 @@ def test_uses_released_core_02015_contract_and_official_schema() -> None:
     Draft202012Validator.check_schema(load_install_sop_schema())
 
 
+def test_report_schema_version_matches_the_published_schema_const() -> None:
+    # `ARTIFACT_SCHEMA_VERSION` tracks the schema *artifact* revision and moves
+    # independently of the report field (core 0.20.36 repurposed it from 1 to 2).
+    # The report field must instead track the constant the artifact pins via
+    # `properties.schema_version.const`, so a core that drifts it has to break
+    # this test instead of shipping reports that fail their own declared schema.
+    from dcc_mcp_core.deployment import load_install_sop_schema
+
+    assert _installer.SCHEMA_VERSION == load_install_sop_schema()["properties"]["schema_version"]["const"]
+    assert _installer.SCHEMA_VERSION == 1
+    assert _installer.ARTIFACT_SCHEMA_VERSION == _installer.INSTALL_SOP_SCHEMA_VERSION
+
+
+def test_every_lifecycle_report_satisfies_the_published_schema(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Both report builders and both exit paths, validated against the schema the
+    # report itself claims to follow. Emitting the artifact revision here is the
+    # defect this guards: it passes on the CI-pinned core and fails in the field.
+    from dcc_mcp_core.deployment import load_install_sop_schema
+
+    host = tmp_path / "Adobe Substance 3D Painter.exe"
+    host.write_bytes(b"synthetic-painter-host")
+    monkeypatch.setenv("DCC_MCP_SUBSTANCE3D_PAINTER_PROFILE", str(tmp_path / "profile"))
+    monkeypatch.setenv("DCC_MCP_SUBSTANCE3D_PAINTER_VERSION", "12.0.1")
+    # Same synthetic host identity tests/test_install_lifecycle.py installs via an
+    # autouse fixture: this module deliberately does not fake it globally.
+    monkeypatch.setattr(_installer, "_windows_file_version", lambda _path: "12.0.1")
+    monkeypatch.setattr(_installer, "_host_product_identity", lambda _path: True)
+
+    validator = Draft202012Validator(load_install_sop_schema())
+
+    # Happy path: a planned install report.
+    assert main(["install", "--dcc-path", str(host), "--python", sys.executable, "--json"]) == 0
+    validator.validate(json.loads(capsys.readouterr().out))
+
+    # Failure path built by `_failure_result`: no host and no interpreter to find.
+    monkeypatch.setattr(
+        _installer,
+        "_resolve_context",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            _installer.LifecycleFailure("preflight", "synthetic preflight failure", _installer.INSTALL_EXIT_PREFLIGHT)
+        ),
+    )
+    assert main(["status", "--json", "--dcc-path", str(host)]) == _installer.INSTALL_EXIT_PREFLIGHT
+    validator.validate(json.loads(capsys.readouterr().out))
+
+    # Argument-failure path built inline by the CLI.
+    assert main(["install", "--json", "--unknown-option"]) == _installer.INSTALL_EXIT_PREFLIGHT
+    validator.validate(json.loads(capsys.readouterr().out))
+
+
 @pytest.mark.parametrize(
     "value",
     ["garbage12.0suffix", " 12.0.1 ", "12.0", "12.0.1.2", "012.0.1", "9" * 5000 + ".0.1"],
