@@ -17,6 +17,13 @@ def _synthetic_painter_file_metadata(monkeypatch):
     monkeypatch.setattr(_installer, "_endpoint_is_owned_by_process", lambda _url, _pid: True)
 
 
+def _published_schema_const() -> int:
+    """The ``schema_version`` value the published Install SOP schema pins."""
+    from dcc_mcp_core.deployment import load_install_sop_schema
+
+    return load_install_sop_schema()["properties"]["schema_version"]["const"]
+
+
 def test_install_defaults_to_a_non_mutating_json_plan(tmp_path, monkeypatch, capsys):
     host = tmp_path / "Adobe Substance 3D Painter.exe"
     host.write_bytes(b"synthetic host")
@@ -39,6 +46,12 @@ def test_install_defaults_to_a_non_mutating_json_plan(tmp_path, monkeypatch, cap
     result = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
+    # The report field is not the schema *artifact* revision (that one is 2 since
+    # core 0.20.36 and moves with core); it is the value the published schema pins
+    # via `properties.schema_version.const`. Assert the literal too: comparing only
+    # against the derived constant would compare the report to its own source and
+    # could never fail.
+    assert result["schema_version"] == _published_schema_const()
     assert result["schema_version"] == 1
     assert result["status"] == "planned"
     assert result["dcc_type"] == "substance3d_painter"
