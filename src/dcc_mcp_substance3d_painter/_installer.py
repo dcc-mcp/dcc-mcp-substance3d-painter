@@ -35,7 +35,6 @@ from dcc_mcp_core.deployment import (
     INSTALL_EXIT_PREFLIGHT,
     INSTALL_EXIT_REQUIRES_RESTART,
     INSTALL_EXIT_VERIFY,
-    INSTALL_SOP_SCHEMA_VERSION,
     inspect_install_root,
     probe_sidecar_tool,
     query_runtime_state,
@@ -50,19 +49,21 @@ COMMAND = "dcc-mcp-substance3d-painter"
 MIN_CORE_VERSION = "0.20.15"
 MIN_PAINTER_VERSION = (7, 2)
 
-# `INSTALL_SOP_SCHEMA_VERSION` is the revision of the published Install SOP schema
-# *artifact* (`adapter-install-sop-vN.schema.json`), 2 since dcc-mcp-core 0.20.36.
-# It is NOT the value of the `schema_version` field that the artifact pins on a
-# report document: that field is a separate, stable counter declared as
-# `properties.schema_version.const` and stays at 1, because artifact revisions only
-# add optional members. The two are named separately here -- conflating them makes
-# every lifecycle report fail validation against the schema it claims to follow the
-# moment the resolved core advances past 0.20.36.
-ARTIFACT_SCHEMA_VERSION = INSTALL_SOP_SCHEMA_VERSION
-
 # Value of the report document's own `schema_version` field. Kept in sync with
 # `load_install_sop_schema()["properties"]["schema_version"]["const"]` by
 # tests/test_install_hardening.py, which fails when the resolved core drifts.
+#
+# It is deliberately NOT the revision of the Install SOP schema *artifact*
+# (`adapter-install-sop-vN.schema.json`, `INSTALL_SOP_SCHEMA_REVISION` in core,
+# 2 since core 0.20.36). That counter names the artifact, while this field is
+# pinned by the artifact and stays at 1, because revisions only add optional
+# members. Conflating the two makes every lifecycle report fail validation
+# against the schema it claims to follow the moment the resolved core advances
+# past 0.20.36; that defect is what the separation here fixes.
+#
+# Core owns the artifact revision, so this module does not mirror it. A local
+# copy is a second source of truth for a value only tests read, and it is the
+# reason the adapter carried a reference to a name core has since deprecated.
 SCHEMA_VERSION = 1
 
 _PROFILE_ENV = "DCC_MCP_SUBSTANCE3D_PAINTER_PROFILE"

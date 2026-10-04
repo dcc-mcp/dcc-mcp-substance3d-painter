@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib
 import json
 import os
 import shutil
@@ -128,16 +129,28 @@ def test_uses_released_core_02015_contract_and_official_schema() -> None:
 
 
 def test_report_schema_version_matches_the_published_schema_const() -> None:
-    # `ARTIFACT_SCHEMA_VERSION` tracks the schema *artifact* revision and moves
-    # independently of the report field (core 0.20.36 repurposed it from 1 to 2).
-    # The report field must instead track the constant the artifact pins via
-    # `properties.schema_version.const`, so a core that drifts it has to break
-    # this test instead of shipping reports that fail their own declared schema.
+    # The report field tracks the const the artifact pins via
+    # `properties.schema_version.const`, NOT the revision of the schema
+    # *artifact* (core's `INSTALL_SOP_SCHEMA_REVISION`, repurposed from 1 to 2
+    # by core 0.20.36). The two counters move independently: artifact revisions
+    # only add optional members, so the report field stays at 1. Stamping the
+    # artifact revision here is the defect this guards -- it passes on an old
+    # core and fails the moment the resolved core advances past 0.20.36.
     from dcc_mcp_core.deployment import load_install_sop_schema
 
     assert _installer.SCHEMA_VERSION == load_install_sop_schema()["properties"]["schema_version"]["const"]
     assert _installer.SCHEMA_VERSION == 1
-    assert _installer.ARTIFACT_SCHEMA_VERSION == _installer.INSTALL_SOP_SCHEMA_VERSION
+
+    # Where core publishes the artifact revision, assert the adapter really does
+    # keep the two counters apart -- and that it does so without mirroring the
+    # value: core owns it, and a local copy is a second source of truth that
+    # only drifts (this is why the adapter no longer references the name core
+    # deprecated in 0.20.40).
+    deployment = importlib.import_module("dcc_mcp_core.deployment")
+    artifact_revision = getattr(deployment, "INSTALL_SOP_SCHEMA_REVISION", None)
+    if artifact_revision is not None:
+        assert _installer.SCHEMA_VERSION != artifact_revision
+    assert not hasattr(_installer, "INSTALL_SOP_SCHEMA_VERSION")
 
 
 def test_every_lifecycle_report_satisfies_the_published_schema(
