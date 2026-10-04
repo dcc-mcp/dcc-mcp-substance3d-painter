@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.6.0...v0.6.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* drop the adapter's copy of Core's Install SOP artifact revision constant ([f8e8846](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/f8e88468b123025a28018ed0fcdfed9102a8506e))
+* report the Install SOP schema version, not the artifact revision ([373c694](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/373c694a48ccf4cb9e9c9f7f0189b49eb7d9240d))
+
 ## [0.6.0](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.5.1...v0.6.0) (2026-09-19)
 
 
