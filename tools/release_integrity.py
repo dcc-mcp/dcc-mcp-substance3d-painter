@@ -646,7 +646,10 @@ def validate_release_workflow(workflow: object) -> None:
         _require_reviewed_job_controls(jobs[job_name], expected)
 
     expected_steps = {
-        "release-please": ["uses:googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7"],
+        "release-please": [
+            "Require organization release token",
+            "uses:googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7",
+        ],
         "build-release-artifact": [
             "uses:actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803",
             "uses:actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1",
@@ -702,15 +705,20 @@ def validate_release_workflow(workflow: object) -> None:
     }
     reviewed_step_controls = {
         "release-please": {
+            "Require organization release token": _reviewed_run_step(
+                "Require organization release token",
+                shell="bash",
+                env={"PERSONAL_ACCESS_TOKEN": "${{ secrets.PERSONAL_ACCESS_TOKEN }}"},
+            ),
             f"uses:{release_please_action}": _reviewed_action_step(
                 release_please_action,
                 step_id="release",
                 with_={
-                    "token": "${{ secrets.PERSONAL_ACCESS_TOKEN || github.token }}",
+                    "token": "${{ secrets.PERSONAL_ACCESS_TOKEN }}",
                     "config-file": "release-please-config.json",
                     "manifest-file": ".release-please-manifest.json",
                 },
-            )
+            ),
         },
         "build-release-artifact": {
             f"uses:{checkout_action}": _reviewed_action_step(
@@ -809,6 +817,9 @@ def validate_release_workflow(workflow: object) -> None:
         _require_reviewed_step_controls(named_by_job[job_name], expected)
 
     reviewed_release_commands = {
+        "release-please": {
+            "Require organization release token": "aec06881b766f0ecbb792f0cd66b0840f116d82e505f50f0ed6b4dc1c9d3a16b",
+        },
         "build-release-artifact": {
             "Verify release source": "eee7aa8235d221d1fb78fadaed0471ab40ed99c053f9a58262f9d72e6c572526",
             "Install build tools": "be80e8b51039f8dfb58c67ab59b8e60b73aa44ed9cd1456bd360ab66ed1926f6",
