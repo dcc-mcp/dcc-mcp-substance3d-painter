@@ -150,6 +150,13 @@ Painter's real native primitives onto their pipeline domains:
 - **`painter-lighting`** — scene lighting. Painter has no light objects, so
   lighting is the image-based environment: environment map, exposure, and
   rotation.
+- **`painter-presets`** — parametric presets: discover generator (`.sbsar`) and
+  smart-material (`.spsm`) resources, inspect their exposed parameters, and set
+  bounded parameter values with host readback. Presets come from the running
+  Painter shelf or a caller-supplied file imported through `painter-project`;
+  the adapter bundles no preset assets. Effects such as water droplets, woven
+  fabric, or grungy textures are examples of what a tuned parametric preset can
+  produce, not shipped content.
 
 Every mutation is confirmed by reading the value back from Painter before the
 tool reports success. Where Painter exposes no readback for a value, the tool
