@@ -401,6 +401,26 @@ def test_read_all_parameters_mapping_truncated():
     assert len(pp.read_all_parameters(access)) == pp.MAX_PARAMETERS
 
 
+@pytest.mark.parametrize(
+    ("count", "truncated"),
+    [
+        (pp.MAX_PARAMETERS - 1, False),
+        (pp.MAX_PARAMETERS, False),  # 64-boundary: exactly MAX is complete, not truncated
+        (pp.MAX_PARAMETERS + 1, True),
+        (pp.MAX_PARAMETERS + 20, True),
+    ],
+)
+def test_read_parameter_snapshot_truncation_flag(count, truncated):
+    # 64-boundary: the flag is derived from fetching MAX_PARAMETERS + 1 items,
+    # so a host exposing exactly MAX_PARAMETERS parameters is NOT truncated.
+    source = _SourceSubstance({f"p{i}": i for i in range(count)})
+    access = pp.resolve_parameter_access(source)
+    snapshot = pp.read_parameter_snapshot(access)
+    assert snapshot is not None
+    assert snapshot.truncated is truncated
+    assert len(snapshot.values) == min(count, pp.MAX_PARAMETERS)
+
+
 def test_read_all_parameters_lister_failure_is_empty():
     source = _SourceSubstance({"a": 1}, flavour="no_list")
     access = pp.resolve_parameter_access(source)
@@ -928,6 +948,41 @@ def test_set_preset_parameters_unknown_name_in_mixed_batch_fails(monkeypatch):
     # R4-1: names are validated before any write, so the valid `weave` in this
     # batch was NOT partially applied even though the batch failed.
     assert source.params == {"weave": 1}
+
+
+def test_set_preset_parameters_exactly_max_parameters_still_validates_names(monkeypatch):
+    # 64-boundary: a host exposing EXACTLY MAX_PARAMETERS parameters yields a
+    # complete (not truncated) snapshot, so an unknown name must still fail
+    # before any write. Previously len(snapshot) == MAX was mistaken for a
+    # truncated result, validation was skipped, and a typo returned a false
+    # write_accepted_only success.
+    stack = _Stack()
+
+    class FixedKeySource(_SourceSubstance):
+        def set_parameter(self, name, value):
+            self._check(value)
+            if name in self.params:  # a real host ignores unknown names
+                self.params[name] = value
+
+        def set_parameters(self, mapping):
+            for value in mapping.values():
+                self._check(value)
+            for name, value in mapping.items():
+                if name in self.params:
+                    self.params[name] = value
+
+    params = {f"p{i}": i for i in range(pp.MAX_PARAMETERS)}
+    source = FixedKeySource(params)
+    node = _PresetNode(7, stack, source)
+    layerstack = _LayerStack({7: node}, [node])
+    _install(monkeypatch, layerstack=layerstack, stack=stack)
+
+    # A valid name plus a typo: the whole batch must fail with no write at all.
+    result = _load("set_preset_parameters").main(node_uid=7, parameters={"p0": 100, "typo": 9})
+    assert result["success"] is False
+    assert result["error"] == "HOST_PARAMETER_UNKNOWN"
+    assert result["context"]["unknown"] == ["typo"]
+    assert source.params == params  # no partial write at the 64 boundary
 
 
 def test_set_preset_parameters_truncated_snapshot_no_false_unknown(monkeypatch):

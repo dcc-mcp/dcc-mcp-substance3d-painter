@@ -6,12 +6,11 @@ from dcc_mcp_core.skill import skill_entry, skill_error, skill_success
 
 from dcc_mcp_substance3d_painter.painter_state import node_summary, resolve_stack
 from dcc_mcp_substance3d_painter.preset_parameters import (
-    MAX_PARAMETERS,
     MISSING,
     ParameterValidationError,
     find_preset_node,
-    read_all_parameters,
     read_parameter,
+    read_parameter_snapshot,
     resolve_channel_types,
     resolve_preset_access,
     validate_parameter_bindings,
@@ -63,24 +62,28 @@ def main(
                 prompt="Call painter_presets__inspect_preset_parameters to read the host parameter capabilities.",
             )
 
-        # R4-1: validate every requested name against ONE authoritative
-        # value-lister snapshot BEFORE any host mutation, so a batch mixing a
-        # valid name with a typo fails without a partial write. A complete
-        # snapshot (< MAX_PARAMETERS) is the host's authoritative parameter-name
+        # R4-1 / 64-boundary: validate every requested name against ONE
+        # authoritative value-lister snapshot BEFORE any host mutation, so a
+        # batch mixing a valid name with a typo fails without a partial write.
+        # A COMPLETE snapshot (not truncated: the lister returned at most
+        # MAX_PARAMETERS entries) is the host's authoritative parameter-name
         # set; a name absent from it is unknown and the host would silently
-        # ignore it. A truncated snapshot, a name-only lister, or a getter-only
-        # source cannot prove a name is unknown, so those are handled after the
-        # write via the write_accepted_only path.
-        preflight = read_all_parameters(access) if access.lister_has_values else None
-        if preflight is not None and len(preflight) < MAX_PARAMETERS:
-            unknown = [name for name in bindings if name not in preflight]
+        # ignore it. A genuinely truncated snapshot, a name-only lister, or a
+        # getter-only source cannot prove a name is unknown, so those are
+        # handled after the write via the write_accepted_only path. The snapshot
+        # carries its own truncated flag, so a host with exactly MAX_PARAMETERS
+        # parameters is still validated instead of being mistaken for a
+        # truncated (incomplete) result.
+        snapshot = read_parameter_snapshot(access) if access.lister_has_values else None
+        if snapshot is not None and not snapshot.truncated:
+            unknown = [name for name in bindings if name not in snapshot.values]
             if unknown:
                 return skill_error(
                     "Painter preset has no such parameter name",
                     "HOST_PARAMETER_UNKNOWN",
                     node=node_summary(parameter_node),
                     unknown=unknown,
-                    observed={name: preflight.get(name) for name in bindings},
+                    observed={name: snapshot.values.get(name) for name in bindings},
                     prompt="One or more parameter names are not exposed by this preset; call painter_presets__inspect_preset_parameters to list the valid names.",
                 )
 

@@ -237,8 +237,29 @@ def serialize_parameter_value(value: Any) -> Any:
     return str(value)[:MAX_STRING_LENGTH]
 
 
-def read_all_parameters(access: ParameterAccess) -> Optional[dict[str, Any]]:
-    """Return a name -> value map, or ``None`` when no lister is exposed."""
+@dataclass(frozen=True)
+class ParameterSnapshot:
+    """A bounded value-lister read plus whether it was cut off.
+
+    ``values`` is the name -> value map capped at ``MAX_PARAMETERS`` entries.
+    ``truncated`` is ``True`` only when the lister returned MORE than
+    ``MAX_PARAMETERS`` entries: one extra item is fetched to tell a genuinely
+    incomplete result apart from a host that exposes exactly ``MAX_PARAMETERS``
+    parameters (whose name set is complete and authoritative).
+    """
+
+    values: dict[str, Any]
+    truncated: bool
+
+
+def read_parameter_snapshot(access: ParameterAccess) -> Optional[ParameterSnapshot]:
+    """Return a value-lister snapshot with an explicit truncation flag.
+
+    Fetching ``MAX_PARAMETERS + 1`` entries makes ``truncated`` unambiguous; the
+    extra entry is used only for detection and never enters ``values``. Callers
+    that need a provably complete name set can then check ``truncated`` instead
+    of guessing from ``len(values)``.
+    """
 
     if access.lister is None:
         return None
@@ -247,17 +268,21 @@ def read_all_parameters(access: ParameterAccess) -> Optional[dict[str, Any]]:
     except _HOST_READ_ERRORS:
         return None
     if isinstance(raw, Mapping):
-        return {
-            str(key)[:MAX_NAME_LENGTH]: serialize_parameter_value(value)
-            for key, value in islice(raw.items(), MAX_PARAMETERS)
-        }
+        items = list(islice(raw.items(), MAX_PARAMETERS + 1))
+        return ParameterSnapshot(
+            values={
+                str(key)[:MAX_NAME_LENGTH]: serialize_parameter_value(value) for key, value in items[:MAX_PARAMETERS]
+            },
+            truncated=len(items) > MAX_PARAMETERS,
+        )
     if isinstance(raw, (list, tuple)):
+        items = list(islice(raw, MAX_PARAMETERS + 1))
         result: dict[str, Any] = {}
-        for item in islice(raw, MAX_PARAMETERS):
+        for item in items[:MAX_PARAMETERS]:
             if isinstance(item, str):
                 key = item[:MAX_NAME_LENGTH]
                 # Read names through the getter only, never back into
-                # read_all_parameters, which would recurse on name-only lists.
+                # read_parameter_snapshot, which would recurse on name-only lists.
                 if access.getter is not None:
                     try:
                         result[key] = serialize_parameter_value(access.getter(item))
@@ -270,8 +295,15 @@ def read_all_parameters(access: ParameterAccess) -> Optional[dict[str, Any]]:
                 result[key] = serialize_parameter_value(item.get("value", item.get("default")))
             elif isinstance(item, (list, tuple)) and len(item) == 2:
                 result[str(item[0])[:MAX_NAME_LENGTH]] = serialize_parameter_value(item[1])
-        return result
+        return ParameterSnapshot(values=result, truncated=len(items) > MAX_PARAMETERS)
     return None
+
+
+def read_all_parameters(access: ParameterAccess) -> Optional[dict[str, Any]]:
+    """Return a name -> value map, or ``None`` when no lister is exposed."""
+
+    snapshot = read_parameter_snapshot(access)
+    return None if snapshot is None else snapshot.values
 
 
 def read_parameter(access: ParameterAccess, name: str) -> Any:
