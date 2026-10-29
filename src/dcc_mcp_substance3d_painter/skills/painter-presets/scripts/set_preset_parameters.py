@@ -63,6 +63,27 @@ def main(
                 prompt="Call painter_presets__inspect_preset_parameters to read the host parameter capabilities.",
             )
 
+        # R4-1: validate every requested name against ONE authoritative
+        # value-lister snapshot BEFORE any host mutation, so a batch mixing a
+        # valid name with a typo fails without a partial write. A complete
+        # snapshot (< MAX_PARAMETERS) is the host's authoritative parameter-name
+        # set; a name absent from it is unknown and the host would silently
+        # ignore it. A truncated snapshot, a name-only lister, or a getter-only
+        # source cannot prove a name is unknown, so those are handled after the
+        # write via the write_accepted_only path.
+        preflight = read_all_parameters(access) if access.lister_has_values else None
+        if preflight is not None and len(preflight) < MAX_PARAMETERS:
+            unknown = [name for name in bindings if name not in preflight]
+            if unknown:
+                return skill_error(
+                    "Painter preset has no such parameter name",
+                    "HOST_PARAMETER_UNKNOWN",
+                    node=node_summary(parameter_node),
+                    unknown=unknown,
+                    observed={name: preflight.get(name) for name in bindings},
+                    prompt="One or more parameter names are not exposed by this preset; call painter_presets__inspect_preset_parameters to list the valid names.",
+                )
+
         written = []
         for name, value in bindings.items():
             try:
@@ -99,41 +120,21 @@ def main(
                 prompt="Painter exposes no parameter readback on this node; export the texture set to confirm the result.",
             )
 
-        # A value-bearing lister (the real get_parameters() returns a dict)
-        # declares the host's actual parameter names. When that snapshot is
-        # complete (< MAX_PARAMETERS), a written name absent from it is an
-        # unknown parameter (e.g. a typo): the host silently ignored the write,
-        # so this must fail, not report success. A truncated snapshot, a host
-        # with only a name lister, or one with only a getter cannot prove a name
-        # is unknown, so their MISSING/None readbacks stay unverifiable.
-        listed_values = read_all_parameters(readback_access) if readback_access.lister_has_values else None
-        names_are_complete = listed_values is not None and len(listed_values) < MAX_PARAMETERS
+        # Names were validated before the write, so here we only classify
+        # readback results. A MISSING/None value (name-only lister, getter-only
+        # source, truncated value-lister snapshot, or a value the host won't
+        # expose) is not proof of a mismatch; report it as unverifiable
+        # (write_accepted_only) rather than a false HOST_READBACK_MISMATCH.
         observed = {}
         mismatches = []
         unreadable = []
-        unknown = []
         for name, expected in bindings.items():
-            if names_are_complete and name not in listed_values:
-                observed[name] = None
-                unknown.append(name)
-                continue
             actual = read_parameter(readback_access, name)
             observed[name] = None if actual is MISSING else actual
             if actual is MISSING or actual is None:
-                # A name-only lister (or a value the host won't expose) is not
-                # proof of a mismatch; report it as unverifiable instead.
                 unreadable.append(name)
             elif not values_equal(expected, actual):
                 mismatches.append(name)
-        if unknown:
-            return skill_error(
-                "Painter preset has no such parameter name",
-                "HOST_PARAMETER_UNKNOWN",
-                node=node_summary(parameter_node),
-                unknown=unknown,
-                observed=observed,
-                prompt="One or more parameter names are not exposed by this preset; call painter_presets__inspect_preset_parameters to list the valid names.",
-            )
         if mismatches:
             return skill_error(
                 "Painter preset parameter readback failed",

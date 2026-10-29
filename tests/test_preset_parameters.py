@@ -619,8 +619,10 @@ def test_inspect_preset_parameters_no_project_open(monkeypatch):
 
 
 def test_set_preset_parameters_verified_readback(monkeypatch):
+    # Both written names must be exposed by the preset: Painter ignores unknown
+    # parameter names, so a value-lister cannot report a name it never had.
     stack = _Stack()
-    node, source = _node_with_source(7, stack, {"droplet_density": 0.4})
+    node, source = _node_with_source(7, stack, {"droplet_density": 0.4, "seed": 0})
     layerstack = _LayerStack({7: node}, [node])
     _install(monkeypatch, layerstack=layerstack, stack=stack)
 
@@ -923,6 +925,9 @@ def test_set_preset_parameters_unknown_name_in_mixed_batch_fails(monkeypatch):
     assert result["success"] is False
     assert result["error"] == "HOST_PARAMETER_UNKNOWN"
     assert result["context"]["unknown"] == ["weave_typo"]
+    # R4-1: names are validated before any write, so the valid `weave` in this
+    # batch was NOT partially applied even though the batch failed.
+    assert source.params == {"weave": 1}
 
 
 def test_set_preset_parameters_truncated_snapshot_no_false_unknown(monkeypatch):

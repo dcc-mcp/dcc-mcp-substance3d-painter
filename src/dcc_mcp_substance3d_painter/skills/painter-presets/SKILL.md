@@ -91,12 +91,13 @@ every value matches, the result reports `verified=True` with a
 names (no values), or that exposes no readback at all, reports `verified=False`
 with a `write_accepted_only` postcondition rather than a false
 `HOST_READBACK_MISMATCH`; a genuine value readback that disagrees fails with
-`HOST_READBACK_MISMATCH`. When a value-bearing lister (e.g. `get_parameters()`
-returning a dict) omits a written name, that parameter does not exist (a typo
-the host silently ignored); the write fails with `HOST_PARAMETER_UNKNOWN`
-instead of being reported as an unconfirmed success — inspect the valid names
-before retrying. `inspect_preset_parameters` selects the same writable source as
-`set_preset_parameters`, so the two tools always describe the same parameter
-table. Treat `verified=False` as "write accepted, value unconfirmed" and confirm
+`HOST_READBACK_MISMATCH`. Before writing, when a value-bearing lister (e.g.
+`get_parameters()` returning a dict) gives a complete name set, every requested
+name is checked against it: an unknown name (a typo the host would silently
+ignore) makes the whole batch fail with `HOST_PARAMETER_UNKNOWN` before any host
+mutation, so a mixed batch never leaves a partial write — inspect the valid
+names before retrying. `inspect_preset_parameters` selects the same writable
+source as `set_preset_parameters`, so the two tools always describe the same
+parameter table. Treat `verified=False` as "write accepted, value unconfirmed" and confirm
 by exporting the texture set. Parameter values themselves are never proof of
 visual quality.

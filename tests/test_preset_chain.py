@@ -160,7 +160,9 @@ class _FakeHost:
         self.tmp_path = tmp_path
         self.stack = _Stack()
         self.source = _SourceSubstance(
-            {"droplet_density": 0.4, "weave_scale": 2.0, "random_seed": 7},
+            # Parameter names are fixed by the preset; `enabled` is exposed up
+            # front so the bool-coercion write targets a real parameter.
+            {"droplet_density": 0.4, "weave_scale": 2.0, "random_seed": 7, "enabled": False},
         )
         self.node = _PresetNode(42, self.stack, self.source)
         self.nodes = {self.node.uid(): self.node}
