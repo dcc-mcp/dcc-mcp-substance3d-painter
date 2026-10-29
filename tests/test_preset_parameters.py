@@ -815,3 +815,141 @@ def test_set_preset_parameters_group_resolves_inner_writable_effect(monkeypatch)
     assert result["postcondition"]["verified"] is True
     assert writable_source.params["weave"] == 6
     assert readonly.params["weave"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Round-2 review fixes (R2-1 / R2-2)
+# ---------------------------------------------------------------------------
+
+
+def test_get_properties_not_treated_as_value_lister():
+    # Non-blocker cleanup: a real get_properties() returns Property descriptors,
+    # not parameter values. It must not fabricate a value-lister/readback
+    # capability the host cannot actually honour.
+    class PropertySource:
+        def get_properties(self):
+            return [object(), object()]
+
+    access = pp.resolve_parameter_access(PropertySource())
+    assert access.lister_has_values is False
+    assert access.capabilities()["list"] is False
+    assert access.capabilities()["readback"] is False
+
+
+def test_inspect_and_set_resolve_same_writable_owner(monkeypatch):
+    # R2-1: inspect must pass required_capability="write" so both tools resolve
+    # to the same writable inner effect. Otherwise an agent inspects the outer
+    # read-only source's parameter table and then calls set against a different
+    # source. The two sources carry different parameters to make the mismatch
+    # observable.
+    stack = _Stack()
+    readonly = _ReadOnlySource({"group_only_param": 1})
+    writable_source = _SourceSubstance({"weave": 1})
+    effect = _PresetNode(11, stack, writable_source)
+    group = _PresetNode(10, stack, readonly, effects=[effect])
+    layerstack = _LayerStack({10: group}, [group])
+    _install(monkeypatch, layerstack=layerstack, stack=stack)
+
+    inspected = _load("inspect_preset_parameters").main(node_uid=10)
+    tuned = _load("set_preset_parameters").main(node_uid=10, parameters={"weave": 6})
+
+    assert inspected["success"] is True, inspected
+    assert tuned["success"] is True, tuned
+    # Both tools report the same owner: the writable inner effect (uid 11).
+    assert inspected["context"]["node"]["uid"] == tuned["context"]["node"]["uid"] == effect.uid()
+    # inspect now shows the writable source's parameter table + write capability.
+    assert inspected["context"]["parameters"] == {"weave": 1}
+    assert inspected["context"]["capabilities"]["write"] is True
+    assert writable_source.params["weave"] == 6
+    assert readonly.params == {"group_only_param": 1}
+
+
+def test_set_preset_parameters_unknown_name_fails(monkeypatch):
+    # R2-2: a value-bearing lister (get_parameters() -> dict) is the host's
+    # authoritative parameter-name set. Writing a name absent from the readback
+    # map means the parameter does not exist (e.g. a typo); the host silently
+    # ignored the write, so this must FAIL, not a success with verified=False.
+    stack = _Stack()
+
+    class FixedKeySource(_SourceSubstance):
+        def set_parameter(self, name, value):
+            self._check(value)
+            if name in self.params:  # a real host ignores unknown names
+                self.params[name] = value
+
+        def set_parameters(self, mapping):
+            for value in mapping.values():
+                self._check(value)
+            for name, value in mapping.items():
+                if name in self.params:
+                    self.params[name] = value
+
+    source = FixedKeySource({"weave": 1})
+    node = _PresetNode(7, stack, source)
+    layerstack = _LayerStack({7: node}, [node])
+    _install(monkeypatch, layerstack=layerstack, stack=stack)
+
+    result = _load("set_preset_parameters").main(node_uid=7, parameters={"weave_typo": 6})
+    assert result["success"] is False
+    assert result["error"] == "HOST_PARAMETER_UNKNOWN"
+    assert "weave_typo" in result["context"]["unknown"]
+    assert source.params == {"weave": 1}
+
+
+def test_set_preset_parameters_unknown_name_in_mixed_batch_fails(monkeypatch):
+    # R2-2: a batch mixing a valid write with a typo must still fail overall
+    # (no partial success reported), and only the typo is flagged unknown.
+    stack = _Stack()
+
+    class FixedKeySource(_SourceSubstance):
+        def set_parameter(self, name, value):
+            self._check(value)
+            if name in self.params:
+                self.params[name] = value
+
+        def set_parameters(self, mapping):
+            for value in mapping.values():
+                self._check(value)
+            for name, value in mapping.items():
+                if name in self.params:
+                    self.params[name] = value
+
+    source = FixedKeySource({"weave": 1})
+    node = _PresetNode(7, stack, source)
+    layerstack = _LayerStack({7: node}, [node])
+    _install(monkeypatch, layerstack=layerstack, stack=stack)
+
+    result = _load("set_preset_parameters").main(node_uid=7, parameters={"weave": 6, "weave_typo": 9})
+    assert result["success"] is False
+    assert result["error"] == "HOST_PARAMETER_UNKNOWN"
+    assert result["context"]["unknown"] == ["weave_typo"]
+
+
+def test_set_preset_parameters_truncated_snapshot_no_false_unknown(monkeypatch):
+    # R2-2 guard: read_all_parameters caps a value lister at MAX_PARAMETERS, so
+    # a truncated snapshot cannot prove a written name is unknown. With no
+    # single getter, such a write stays write_accepted_only, never a false
+    # HOST_PARAMETER_UNKNOWN for a large preset.
+    stack = _Stack()
+
+    class BigSource:
+        def __init__(self):
+            self.params = {f"p{i}": i for i in range(pp.MAX_PARAMETERS + 10)}
+
+        def get_parameters(self):  # value lister, but NO getter
+            return dict(self.params)
+
+        def set_parameter(self, name, value):
+            self.params[name] = value
+
+    source = BigSource()
+    node = _PresetNode(7, stack, source)
+    layerstack = _LayerStack({7: node}, [node])
+    _install(monkeypatch, layerstack=layerstack, stack=stack)
+
+    # p73 is a real parameter but falls outside the first MAX_PARAMETERS keys.
+    result = _load("set_preset_parameters").main(node_uid=7, parameters={"p73": 999})
+    assert result["success"] is True
+    assert result["error"] in (None, "")
+    assert result["postcondition"]["verified"] is False
+    assert result["postcondition"]["verifies"] == "write_accepted_only"

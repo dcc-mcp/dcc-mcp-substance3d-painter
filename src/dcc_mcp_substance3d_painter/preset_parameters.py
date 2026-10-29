@@ -45,7 +45,10 @@ _GETTER_NAMES = ("get_parameter", "get_parameter_value", "get_property", "get_in
 _SETTER_NAMES = ("set_parameter", "set_parameter_value", "set_property", "set_input")
 _BULK_SETTER_NAMES = ("set_parameters", "set_properties", "set_parameter_values")
 # Value-bearing listers return a name -> value mapping (or value descriptors).
-_VALUE_LISTER_NAMES = ("get_parameters", "get_parameter_values", "list_parameters", "get_properties")
+# `get_properties` is intentionally excluded: on real hosts it returns Property
+# descriptor objects, not parameter values, so treating it as a value lister
+# would fabricate a readback capability the host cannot honour.
+_VALUE_LISTER_NAMES = ("get_parameters", "get_parameter_values", "list_parameters")
 # Name-only listers return parameter names but no values. They can enumerate a
 # preset's parameters, but a write cannot be verified through them (P2-CR1).
 _NAME_LISTER_NAMES = ("get_parameter_names", "list_parameter_names")

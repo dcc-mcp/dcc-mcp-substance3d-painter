@@ -37,7 +37,11 @@ def main(
                 node_uid=int(node_uid),
             )
         channel_types = tuple(resolve_channel_types(textureset))
-        parameter_node, access = resolve_preset_access(node, channel_types)
+        # Match set_preset_parameters' writable-source selection so an agent
+        # inspects the exact parameter table a write will target. When no
+        # writable source exists, resolve_preset_access falls back to the first
+        # source with any capability, so read-only presets stay inspectable.
+        parameter_node, access = resolve_preset_access(node, channel_types, required_capability="write")
         parameters = read_all_parameters(access)
         return skill_success(
             "Inspected Painter preset parameters",

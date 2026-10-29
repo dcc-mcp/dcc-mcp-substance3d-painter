@@ -6,9 +6,11 @@ from dcc_mcp_core.skill import skill_entry, skill_error, skill_success
 
 from dcc_mcp_substance3d_painter.painter_state import node_summary, resolve_stack
 from dcc_mcp_substance3d_painter.preset_parameters import (
+    MAX_PARAMETERS,
     MISSING,
     ParameterValidationError,
     find_preset_node,
+    read_all_parameters,
     read_parameter,
     resolve_channel_types,
     resolve_preset_access,
@@ -97,10 +99,24 @@ def main(
                 prompt="Painter exposes no parameter readback on this node; export the texture set to confirm the result.",
             )
 
+        # A value-bearing lister (the real get_parameters() returns a dict)
+        # declares the host's actual parameter names. When that snapshot is
+        # complete (< MAX_PARAMETERS), a written name absent from it is an
+        # unknown parameter (e.g. a typo): the host silently ignored the write,
+        # so this must fail, not report success. A truncated snapshot, a host
+        # with only a name lister, or one with only a getter cannot prove a name
+        # is unknown, so their MISSING/None readbacks stay unverifiable.
+        listed_values = read_all_parameters(readback_access) if readback_access.lister_has_values else None
+        names_are_complete = listed_values is not None and len(listed_values) < MAX_PARAMETERS
         observed = {}
         mismatches = []
         unreadable = []
+        unknown = []
         for name, expected in bindings.items():
+            if names_are_complete and name not in listed_values:
+                observed[name] = None
+                unknown.append(name)
+                continue
             actual = read_parameter(readback_access, name)
             observed[name] = None if actual is MISSING else actual
             if actual is MISSING or actual is None:
@@ -109,6 +125,15 @@ def main(
                 unreadable.append(name)
             elif not values_equal(expected, actual):
                 mismatches.append(name)
+        if unknown:
+            return skill_error(
+                "Painter preset has no such parameter name",
+                "HOST_PARAMETER_UNKNOWN",
+                node=node_summary(parameter_node),
+                unknown=unknown,
+                observed=observed,
+                prompt="One or more parameter names are not exposed by this preset; call painter_presets__inspect_preset_parameters to list the valid names.",
+            )
         if mismatches:
             return skill_error(
                 "Painter preset parameter readback failed",
