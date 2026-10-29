@@ -6,6 +6,10 @@ proves the caller-provided ``.sbsar`` chain: discover -> import -> apply ->
 inspect/set parameters -> export, with parameter changes readable back (host
 readback) at every mutating step. No real Painter or third-party asset is used;
 the imported ``.sbsar`` is a self-authored temporary fixture.
+
+The fake models the real two-layer API: a layer-stack ``GeneratorEffectNode``
+exposes ``get_source()`` returning a ``SourceSubstance``, and that source owns
+``get_parameters()`` / ``set_parameters()``. Parameters are never on the node.
 """
 
 from __future__ import annotations
@@ -76,19 +80,42 @@ class _ResourceItem:
         return SimpleNamespace(name=self._usage)
 
 
-class _PresetNode:
-    """The applied preset instance: identity + parameter controls + traversal."""
+class _SourceSubstance:
+    """Parameter host behind ``get_source()``: owns the parameter interface."""
 
-    def __init__(self, uid: int, stack: _Stack, params: dict) -> None:
+    def __init__(self, params: dict) -> None:
+        self.params = dict(params)
+
+    def get_parameters(self):
+        return dict(self.params)
+
+    def get_parameter(self, name):
+        return self.params[name]
+
+    def set_parameter(self, name, value):
+        self.params[name] = value
+
+    def set_parameters(self, mapping):
+        self.params.update(mapping)
+
+
+class _PresetNode:
+    """The applied preset instance: a generator effect node with a source."""
+
+    def __init__(self, uid: int, stack: _Stack, source: _SourceSubstance) -> None:
         self._uid = uid
         self._stack = stack
-        self._params = dict(params)
+        self._source = source
+        self._name = "Water Droplets"
 
     def uid(self) -> int:
         return self._uid
 
     def get_name(self) -> str:
-        return "Water Droplets"
+        return self._name
+
+    def set_name(self, name: str) -> None:
+        self._name = name
 
     def get_type(self) -> SimpleNamespace:
         return SimpleNamespace(name="Generator")
@@ -96,21 +123,8 @@ class _PresetNode:
     def get_stack(self) -> _Stack:
         return self._stack
 
-    def set_name(self, name: str) -> None:
-        self._name = name
-
-    def get_name_readback(self) -> str:
-        return getattr(self, "_name", "Water Droplets")
-
-    # Parameter interface (generator effect flavor).
-    def get_parameters(self):
-        return dict(self._params)
-
-    def get_parameter(self, name):
-        return self._params[name]
-
-    def set_parameter(self, name, value):
-        self._params[name] = value
+    def get_source(self):
+        return self._source
 
     def sub_layers(self):
         return []
@@ -145,11 +159,10 @@ class _FakeHost:
     def __init__(self, tmp_path: Path) -> None:
         self.tmp_path = tmp_path
         self.stack = _Stack()
-        self.node = _PresetNode(
-            42,
-            self.stack,
+        self.source = _SourceSubstance(
             {"droplet_density": 0.4, "weave_scale": 2.0, "random_seed": 7},
         )
+        self.node = _PresetNode(42, self.stack, self.source)
         self.nodes = {self.node.uid(): self.node}
         self.resources = [
             _ResourceItem(GEN_URL, "GENERATOR"),
@@ -273,8 +286,9 @@ def test_full_preset_authoring_chain_with_parameter_readback(monkeypatch, tmp_pa
     applied = _load(PROJECT_SCRIPTS, "apply_smart_material").main(resource_url=GEN_URL)
     assert applied["success"] is True, applied
     node_uid = applied["context"]["layer_uid"]
+    assert node_uid == host.node.uid()
 
-    # 4. Inspect exposed parameters (new skill).
+    # 4. Inspect exposed parameters (new skill) — read from get_source().
     inspected = _load(PRESET_SCRIPTS, "inspect_preset_parameters").main(node_uid=node_uid)
     assert inspected["success"] is True, inspected
     assert inspected["context"]["parameters"]["droplet_density"] == 0.4
@@ -305,3 +319,21 @@ def test_full_preset_authoring_chain_with_parameter_readback(monkeypatch, tmp_pa
     assert exported["success"] is True, exported
     assert host.exported_file.is_file()
     assert exported["context"]["texture_sets"] == ["body"]
+
+
+def test_chain_bool_parameter_is_coerced_to_int(monkeypatch, tmp_path):
+    # P2-BOOL over the full chain: a boolean parameter reaches the source as an
+    # int (SourceSubstance rejects bool) and is verified by int readback.
+    host = _FakeHost(tmp_path)
+    host.install(monkeypatch)
+
+    applied = _load(PROJECT_SCRIPTS, "apply_smart_material").main(resource_url=GEN_URL)
+    node_uid = applied["context"]["layer_uid"]
+
+    tuned = _load(PRESET_SCRIPTS, "set_preset_parameters").main(
+        node_uid=node_uid, parameters={"droplet_density": 0.85, "enabled": True}
+    )
+    assert tuned["success"] is True, tuned
+    assert tuned["postcondition"]["verified"] is True
+    assert host.source.params["enabled"] == 1
+    assert not isinstance(host.source.params["enabled"], bool)

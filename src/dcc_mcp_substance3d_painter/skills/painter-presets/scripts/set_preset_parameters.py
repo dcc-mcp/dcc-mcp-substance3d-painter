@@ -10,6 +10,7 @@ from dcc_mcp_substance3d_painter.preset_parameters import (
     ParameterValidationError,
     find_preset_node,
     read_parameter,
+    resolve_channel_types,
     resolve_preset_access,
     validate_parameter_bindings,
     values_equal,
@@ -38,6 +39,7 @@ def main(
         return skill_error("Invalid Painter preset parameters", str(exc))
 
     try:
+        channel_types = tuple(resolve_channel_types(textureset))
         target_stack = resolve_stack(textureset, texture_set, stack)
         node = find_preset_node(layerstack, target_stack, int(node_uid))
         if node is None:
@@ -46,7 +48,9 @@ def main(
                 "HOST_PRESET_NODE_NOT_FOUND",
                 node_uid=int(node_uid),
             )
-        parameter_node, access = resolve_preset_access(node)
+        # Resolve the writable SourceSubstance, skipping read-only sources so a
+        # smart-material group does not shadow a writable generator effect.
+        parameter_node, access = resolve_preset_access(node, channel_types, required_capability="write")
         capabilities = access.capabilities()
         if not capabilities["write"]:
             return skill_error(
@@ -70,10 +74,15 @@ def main(
                 )
             written.append(name)
 
-        # Re-resolve the node so readback uses a fresh host handle, not the
-        # pre-write binding; a stale handle cannot prove the write landed.
+        # Re-resolve from a fresh host handle. Requiring the same "write"
+        # capability keeps readback on the exact source that was written (a
+        # different required capability could select a different effect).
         readback_node = find_preset_node(layerstack, target_stack, int(node_uid))
-        _, readback_access = resolve_preset_access(readback_node) if readback_node is not None else (None, None)
+        _, readback_access = (
+            resolve_preset_access(readback_node, channel_types, required_capability="write")
+            if readback_node is not None
+            else (None, None)
+        )
         if readback_access is None or not readback_access.capabilities()["readback"]:
             return skill_success(
                 "Set Painter preset parameters (parameter values have no host readback)",
@@ -90,10 +99,15 @@ def main(
 
         observed = {}
         mismatches = []
+        unreadable = []
         for name, expected in bindings.items():
             actual = read_parameter(readback_access, name)
             observed[name] = None if actual is MISSING else actual
-            if not values_equal(expected, actual):
+            if actual is MISSING or actual is None:
+                # A name-only lister (or a value the host won't expose) is not
+                # proof of a mismatch; report it as unverifiable instead.
+                unreadable.append(name)
+            elif not values_equal(expected, actual):
                 mismatches.append(name)
         if mismatches:
             return skill_error(
@@ -102,6 +116,20 @@ def main(
                 node=node_summary(parameter_node),
                 mismatches=mismatches,
                 observed=observed,
+            )
+        if unreadable:
+            return skill_success(
+                "Set Painter preset parameters (some values have no host readback)",
+                node=node_summary(parameter_node),
+                parameters=bindings,
+                capabilities=capabilities,
+                observed=observed,
+                verified=False,
+                postcondition={
+                    "method": "preset_parameter_write_only",
+                    "verifies": "write_accepted_only",
+                },
+                prompt="Painter exposes no value readback for some parameters; export the texture set to confirm the result.",
             )
         return skill_success(
             "Set Painter preset parameters",

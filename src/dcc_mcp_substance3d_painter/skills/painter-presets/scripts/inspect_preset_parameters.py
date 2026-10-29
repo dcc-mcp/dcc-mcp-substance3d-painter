@@ -8,6 +8,7 @@ from dcc_mcp_substance3d_painter.painter_state import node_summary, resolve_stac
 from dcc_mcp_substance3d_painter.preset_parameters import (
     find_preset_node,
     read_all_parameters,
+    resolve_channel_types,
     resolve_preset_access,
 )
 
@@ -35,7 +36,8 @@ def main(
                 "HOST_PRESET_NODE_NOT_FOUND",
                 node_uid=int(node_uid),
             )
-        parameter_node, access = resolve_preset_access(node)
+        channel_types = tuple(resolve_channel_types(textureset))
+        parameter_node, access = resolve_preset_access(node, channel_types)
         parameters = read_all_parameters(access)
         return skill_success(
             "Inspected Painter preset parameters",
