@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.4](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.6.3...v0.6.4) (2026-11-15)
+
+
+### Documentation
+
+* refresh the generated DCC-MCP host matrix pointer ([0b02c81](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/0b02c81a5c3e01d20108c2dab2d940a2bf47fb58))
+* refresh the generated DCC-MCP host matrix pointer ([88b03ec](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/commit/88b03ec3dbfc482507bdab53e2abf4dbcd4a6ec8))
+
 ## [0.6.3](https://github.com/dcc-mcp/dcc-mcp-substance3d-painter/compare/v0.6.2...v0.6.3) (2026-10-17)
 
 
